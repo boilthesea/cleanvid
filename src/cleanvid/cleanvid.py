@@ -12,6 +12,7 @@ import sys
 import re
 import pysrt
 import delegator
+import tempfile # Added for temporary files
 from datetime import datetime
 from subliminal import *
 from babelfish import Language
@@ -194,6 +195,15 @@ def UTF8Convert(fileSpec, universalEndline=True):
     with open(fileSpec, 'wb') as f:
         f.write(raw)
 
+# Helper function to run ffmpeg and check results
+def run_ffmpeg_command(command, error_message_prefix="ffmpeg command failed"):
+    print(f"Running ffmpeg command:\n{command}") # Log the command
+    result = delegator.run(command, block=True)
+    if result.return_code != 0:
+        print(f"ffmpeg stderr:\n{result.err}")
+        raise ValueError(f"{error_message_prefix}: {result.err}")
+    print("ffmpeg command completed successfully.")
+    return result
 
 #################################################################################
 class VidCleaner(object):
@@ -313,8 +323,11 @@ class VidCleaner(object):
                 os.remove(self.jsonFileSpec)
         if os.path.isfile(self.tmpSubsFileSpec):
             os.remove(self.tmpSubsFileSpec)
-        if os.path.isfile(self.assSubsFileSpec):
-            os.remove(self.assSubsFileSpec)
+        if os.path.isfile(self.assSubsFileSpec) and not self.hardCode: # Keep ASS if hardcoding succeeded
+             try:
+                 os.remove(self.assSubsFileSpec)
+             except OSError:
+                 pass # Ignore error if file is gone
 
     ######## CreateCleanSubAndMuteList #################################################
     def CreateCleanSubAndMuteList(self):
@@ -486,6 +499,8 @@ class VidCleaner(object):
                 + timePairPeek[0].second
                 + (timePairPeek[0].microsecond / 1000000.0)
             )
+            # Build filter graph components for audio filtering
+            # Using afade for smoother transitions (original logic)
             self.muteTimeList.append(
                 "afade=enable='between(t,"
                 + format(lineStart, '.3f')
@@ -493,17 +508,18 @@ class VidCleaner(object):
                 + format(lineEnd, '.3f')
                 + ")':t=out:st="
                 + format(lineStart, '.3f')
-                + ":d=10ms"
+                + ":d=10ms" # Mute section (fade out)
             )
             self.muteTimeList.append(
                 "afade=enable='between(t,"
                 + format(lineEnd, '.3f')
                 + ","
-                + format(lineStartPeek, '.3f')
+                + format(lineStartPeek, '.3f') # Use peek for fade-in start
                 + ")':t=in:st="
                 + format(lineEnd, '.3f')
-                + ":d=10ms"
+                + ":d=10ms" # Unmute section (fade in)
             )
+
             if self.edl:
                 edlLines.append(f"{format(lineStart, '.1f')}\t{format(lineEnd, '.3f')}\t1")
             if plexDict:
@@ -523,105 +539,332 @@ class VidCleaner(object):
 
     ######## MultiplexCleanVideo ###################################################
     def MultiplexCleanVideo(self):
-        # if we're don't *have* to generate a new video file, don't
-        # we need to generate a video file if any of the following are true:
-        # - we were explicitly asked to re-encode
-        # - we are hard-coding (burning) subs
-        # - we are embedding a subtitle stream
-        # - we are not doing "subs only" or EDL mode and there more than zero mute sections
-        if (
-            self.reEncodeVideo
-            or self.reEncodeAudio
-            or self.hardCode
-            or self.embedSubs
-            or ((not self.subsOnly) and (len(self.muteTimeList) > 0))
-        ):
-            if self.reEncodeVideo or self.hardCode:
-                if self.hardCode and os.path.isfile(self.cleanSubsFileSpec):
-                    self.assSubsFileSpec = self.cleanSubsFileSpec + '.ass'
-                    subConvCmd = f"ffmpeg -hide_banner -nostats -loglevel error -y -i {self.cleanSubsFileSpec} {self.assSubsFileSpec}"
-                    subConvResult = delegator.run(subConvCmd, block=True)
-                    if (subConvResult.return_code == 0) and os.path.isfile(self.assSubsFileSpec):
-                        videoArgs = f"{self.vParams} -vf \"ass={self.assSubsFileSpec}\""
-                    else:
-                        print(subConvCmd)
-                        print(subConvResult.err)
-                        raise ValueError(f'Could not process {self.cleanSubsFileSpec}')
-                else:
-                    videoArgs = self.vParams
-            else:
-                videoArgs = "-c:v copy"
+        temp_files_to_clean = [] # List to hold paths of temp files for cleanup
+        temp_filter_filepath = None # Keep this separate as it's handled slightly differently
+        audioStreams = None # Define audioStreams in the broader scope
 
-            audioStreamOnlyIndex = 0
-            if audioStreams := GetAudioStreamsInfo(self.inputVidFileSpec).get('streams', []):
-                if len(audioStreams) > 0:
-                    if self.audioStreamIdx is None:
-                        if len(audioStreams) == 1:
-                            if 'index' in audioStreams[0]:
-                                self.audioStreamIdx = audioStreams[0]['index']
-                            else:
-                                raise ValueError(f'Could not determine audio stream index for {self.inputVidFileSpec}')
-                        else:
-                            raise ValueError(
-                                f'Multiple audio streams, specify audio stream index with --audio-stream-index'
-                            )
-                    elif any(stream.get('index', -1) == self.audioStreamIdx for stream in audioStreams):
-                        audioStreamOnlyIndex = next(
-                            (
-                                i
-                                for i, stream in enumerate(audioStreams)
-                                if stream.get('index', -1) == self.audioStreamIdx
-                            ),
-                            0,
-                        )
-                    else:
-                        raise ValueError(
-                            f'Audio stream index {self.audioStreamIdx} is invalid for {self.inputVidFileSpec}'
-                        )
-                else:
-                    raise ValueError(f'No audio streams found in {self.inputVidFileSpec}')
-            else:
-                raise ValueError(f'Could not determine audio streams in {self.inputVidFileSpec}')
-            self.aParams = re.sub(r"-c:a(\s+)", rf"-c:a:{str(audioStreamOnlyIndex)}\1", self.aParams)
-            audioUnchangedMapList = ' '.join(
-                f'-map 0:a:{i}' if i != audioStreamOnlyIndex else '' for i in range(len(audioStreams))
+        try:
+            # Determine if video processing is needed (existing logic)
+            needs_processing = (
+                self.reEncodeVideo
+                or self.reEncodeAudio
+                or self.hardCode
+                or self.embedSubs
+                or ((not self.subsOnly) and (len(self.muteTimeList) > 0)) # Check original muteTimeList length
             )
 
+            if not needs_processing:
+                self.unalteredVideo = True
+                print("No video/audio processing required based on options.")
+                return # Exit early if no processing needed
+
+            # --- Determine audio stream index ---
+            audioStreamOnlyIndex = 0 # Default to first stream if index not specified/found
+            audioStreams = GetAudioStreamsInfo(self.inputVidFileSpec)
+            if not audioStreams or 'streams' not in audioStreams or not audioStreams['streams']:
+                 raise ValueError(f'Could not determine audio streams in {self.inputVidFileSpec}')
+
+            actual_streams = audioStreams['streams']
+            if self.audioStreamIdx is None:
+                if len(actual_streams) == 1:
+                    if 'index' in actual_streams[0]:
+                        self.audioStreamIdx = actual_streams[0]['index']
+                        # Find the 0-based index for mapping
+                        audioStreamOnlyIndex = next((i for i, s in enumerate(actual_streams) if s.get('index') == self.audioStreamIdx), 0)
+                    else:
+                        raise ValueError(f'Could not determine audio stream index for {self.inputVidFileSpec}')
+                else:
+                    raise ValueError(
+                        f'Multiple audio streams ({len(actual_streams)} found), specify audio stream index with --audio-stream-index'
+                    )
+            elif any(stream.get('index', -1) == self.audioStreamIdx for stream in actual_streams):
+                 # Find the 0-based index for mapping
+                 audioStreamOnlyIndex = next((i for i, s in enumerate(actual_streams) if s.get('index') == self.audioStreamIdx), 0)
+            else:
+                raise ValueError(
+                    f'Audio stream index {self.audioStreamIdx} is invalid for {self.inputVidFileSpec}'
+                )
+
+            # Apply stream index to aParams if needed (original logic modified)
+            # This might add complexity if aParams already has stream specifiers.
+            # Let's simplify: we'll handle codec selection explicitly later.
+            # self.aParams = re.sub(r"-c:a(\s+)", rf"-c:a:{str(audioStreamOnlyIndex)}\1", self.aParams)
+            print(f"Selected audio stream: Input Index={self.audioStreamIdx}, FFmpeg Map Index=0:a:{audioStreamOnlyIndex}")
+
+
+            # --- Determine if audio filtering is needed ---
+            # Note: muteTimeList is populated in CreateCleanSubAndMuteList
             if self.aDownmix and HasAudioMoreThanStereo(self.inputVidFileSpec):
-                self.muteTimeList.insert(0, AUDIO_DOWNMIX_FILTER)
-            if (not self.subsOnly) and (len(self.muteTimeList) > 0):
-                audioFilter = f' -filter_complex "[0:a:{audioStreamOnlyIndex}]{",".join(self.muteTimeList)}[a{audioStreamOnlyIndex}]"'
+                # Prepend downmix filter if needed *before* checking length
+                if AUDIO_DOWNMIX_FILTER not in self.muteTimeList: # Avoid duplicates
+                    self.muteTimeList.insert(0, AUDIO_DOWNMIX_FILTER)
+
+            audio_filtering_active = (not self.subsOnly) and (len(self.muteTimeList) > 0)
+
+            # --- Main Processing Logic ---
+            if audio_filtering_active:
+                print("Audio filtering is active. Using multi-step ffmpeg process.")
+
+                # == Step 1: Split Streams ==
+                print("Step 1: Splitting video and audio streams...")
+
+                # Create temporary files (manage deletion manually in finally)
+                # Use mkv as intermediate container for video, wav for raw audio
+                temp_video_file = tempfile.NamedTemporaryFile(suffix=".mkv", delete=False)
+                temp_raw_audio_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                temp_video_filepath = temp_video_file.name
+                temp_raw_audio_filepath = temp_raw_audio_file.name
+                temp_video_file.close() # Close handles immediately
+                temp_raw_audio_file.close()
+                temp_files_to_clean.extend([temp_video_filepath, temp_raw_audio_filepath])
+                print(f"  Temp video file: {temp_video_filepath}")
+                print(f"  Temp raw audio file: {temp_raw_audio_filepath}")
+
+                # 1a: Extract video (copy)
+                ffmpeg_split_video_cmd = (
+                    f"ffmpeg -hide_banner -nostats -loglevel error -y "
+                    f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
+                    f"-i \"{self.inputVidFileSpec}\" "
+                    f"-map 0:v -c:v copy -dn -sn " # Copy video, drop data/subs
+                    f"\"{temp_video_filepath}\""
+                )
+                run_ffmpeg_command(ffmpeg_split_video_cmd, "Failed to split video stream")
+
+                # 1b: Extract and decode audio to WAV
+                ffmpeg_split_audio_cmd = (
+                    f"ffmpeg -hide_banner -nostats -loglevel error -y "
+                    f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
+                    f"-i \"{self.inputVidFileSpec}\" "
+                    f"-map 0:a:{audioStreamOnlyIndex} -c:a pcm_s16le " # Decode to WAV
+                    f"\"{temp_raw_audio_filepath}\""
+                )
+                run_ffmpeg_command(ffmpeg_split_audio_cmd, "Failed to split and decode audio stream")
+
+                # == Step 2: Filter Audio ==
+                print("Step 2: Filtering audio stream...")
+
+                # Create filter script file
+                filter_graph_content = ",".join(self.muteTimeList)
+                temp_filter_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
+                temp_filter_filepath = temp_filter_file.name # Store path for cleanup
+                # Filtergraph for single WAV input doesn't need stream specifiers like [0:a:0]
+                # It implicitly operates on the input stream.
+                temp_filter_file.write(f"{filter_graph_content}")
+                temp_filter_file.close()
+                temp_files_to_clean.append(temp_filter_filepath) # Add filter script for cleanup
+                print(f"  Temp filter script: {temp_filter_filepath}")
+
+
+                # Determine output audio parameters (remove stream specifiers if present)
+                # Use default codec if 'copy' is specified, otherwise use provided params
+                current_aParams = self.aParams
+                default_codec_match = re.search(r'-c:a\s+(\S+)', AUDIO_DEFAULT_PARAMS)
+                default_codec = default_codec_match.group(1) if default_codec_match else 'aac'
+                output_audio_codec = default_codec # Default to AAC
+
+                # Try to extract codec and other params from self.aParams
+                # Remove any stream specifiers first
+                current_aParams = re.sub(r'-c:a:\d+\s+', '-c:a ', current_aParams)
+                current_aParams = re.sub(r'-codec:a:\d+\s+', '-codec:a ', current_aParams)
+
+                codec_match = re.search(r'-(?:c|codec):a\s+(\S+)', current_aParams)
+                if codec_match:
+                    specified_codec = codec_match.group(1)
+                    if specified_codec.lower() != 'copy':
+                        output_audio_codec = specified_codec
+                        # Remove the codec part to keep other params like bitrate, etc.
+                        current_aParams = re.sub(r'\s*-(?:c|codec):a\s+\S+', '', current_aParams).strip()
+                    else:
+                        # If 'copy' was specified, just use default codec and ignore other params in self.aParams for this step
+                         current_aParams = re.sub(r'\s*-(?:c|codec):a\s+copy', '', current_aParams).strip()
+                else:
+                    # No codec specified in aParams, use default
+                    output_audio_codec = default_codec
+                    current_aParams = "" # Clear params if only default codec is used
+
+                # Determine filtered audio file extension based on codec
+                filtered_audio_suffix = f".{output_audio_codec}"
+                if output_audio_codec == 'aac': filtered_audio_suffix = '.m4a'
+                elif output_audio_codec == 'ac3': filtered_audio_suffix = '.ac3'
+                elif output_audio_codec == 'opus': filtered_audio_suffix = '.opus'
+                # Add more mappings if needed
+
+                temp_filtered_audio_file = tempfile.NamedTemporaryFile(suffix=filtered_audio_suffix, delete=False)
+                temp_filtered_audio_filepath = temp_filtered_audio_file.name
+                temp_filtered_audio_file.close()
+                temp_files_to_clean.append(temp_filtered_audio_filepath)
+                print(f"  Temp filtered audio file: {temp_filtered_audio_filepath}")
+                print(f"  Using audio codec: {output_audio_codec}, params: '{current_aParams}'")
+
+
+                # Construct filter command
+                ffmpeg_filter_audio_cmd = (
+                    f"ffmpeg -hide_banner -nostats -loglevel error -y "
+                    f"-i \"{temp_raw_audio_filepath}\" "
+                    f"-filter_script \"{temp_filter_filepath}\" "
+                    f"-c:a {output_audio_codec} {current_aParams} " # Apply codec and remaining params
+                    f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                    f"\"{temp_filtered_audio_filepath}\""
+                )
+                run_ffmpeg_command(ffmpeg_filter_audio_cmd, "Failed to filter audio stream")
+
+                # == Step 3: Mux Streams ==
+                print("Step 3: Muxing final video...")
+
+                # Base mux command inputs and maps
+                mux_inputs = f"-i \"{temp_video_filepath}\" -i \"{temp_filtered_audio_filepath}\""
+                mux_maps = "-map 0:v -map 1:a"
+                # Start with copy codecs, may be overridden
+                mux_codecs = "-c:v copy -c:a copy"
+
+                # Handle subtitle embedding (Input 2)
+                if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
+                    mux_inputs += f" -i \"{self.cleanSubsFileSpec}\""
+                    mux_maps += " -map 2:s" # Map subtitles from input 2
+                    outFileParts = os.path.splitext(self.outputVidFileSpec)
+                    subs_codec = 'mov_text' if outFileParts[1] == '.mp4' else 'srt'
+                    # Add subtitle codec, disposition, metadata. Replace existing -c copy or add if needed
+                    mux_codecs += f" -c:s {subs_codec} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang}"
+                else:
+                     mux_codecs += " -sn" # Explicitly remove subs if not embedding
+
+                # Handle hardcoding (overrides video copy in mux step)
+                if self.hardCode:
+                     if not os.path.isfile(self.cleanSubsFileSpec):
+                         print("Warning: Hardcode requested but clean subtitle file not found.")
+                     else:
+                         # Convert SRT to ASS if needed (reuse existing logic/variable)
+                         # Ensure assSubsFileSpec is defined within the class scope if needed elsewhere
+                         if not hasattr(self, 'assSubsFileSpec') or not self.assSubsFileSpec:
+                             self.assSubsFileSpec = os.path.splitext(self.cleanSubsFileSpec)[0] + '.ass'
+
+                         # Check if ASS file exists or needs conversion
+                         if not os.path.isfile(self.assSubsFileSpec) or os.path.getmtime(self.assSubsFileSpec) < os.path.getmtime(self.cleanSubsFileSpec):
+                             print("Converting SRT to ASS for hardcoding...")
+                             subConvCmd = f"ffmpeg -hide_banner -nostats -loglevel error -y -i \"{self.cleanSubsFileSpec}\" \"{self.assSubsFileSpec}\""
+                             run_ffmpeg_command(subConvCmd, "Failed to convert subtitles to ASS format")
+                             # Don't add ASS to temp_files_to_clean if we want to keep it
+                         else:
+                             print("Using existing ASS file for hardcoding.")
+
+
+                         if os.path.isfile(self.assSubsFileSpec):
+                             print("Applying hardcoded subtitles...")
+                             # Replace video codec copy with re-encode + filter
+                             video_encode_params = self.vParams # Use user/default encode params
+                             # Escape path for ffmpeg filter syntax (Windows needs special care)
+                             escaped_ass_path = self.assSubsFileSpec.replace('\\', '/').replace(':', '\\\\:')
+                             mux_codecs = re.sub(r'-c:v\s+copy', f"{video_encode_params} -vf \"ass='{escaped_ass_path}'\"", mux_codecs)
+                         else:
+                             print("Warning: Failed to find or create ASS file for hardcoding.")
+
+
+                ffmpeg_mux_cmd = (
+                    f"ffmpeg -hide_banner -nostats -loglevel error -y "
+                    f"{mux_inputs} "
+                    f"{mux_maps} {mux_codecs} "
+                    f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                    f"\"{self.outputVidFileSpec}\""
+                )
+                run_ffmpeg_command(ffmpeg_mux_cmd, "Failed to mux final video")
+
             else:
-                audioFilter = " "
-            if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
-                outFileParts = os.path.splitext(self.outputVidFileSpec)
-                subsArgsInput = f" -i \"{self.cleanSubsFileSpec}\" "
-                subsArgsEmbed = f" -map 1:s -c:s {'mov_text' if outFileParts[1] == '.mp4' else 'srt'} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang} "
-            else:
+                # --- Original Logic (Simplified for no filtering) ---
+                print("Audio filtering not active. Using single-step ffmpeg process.")
+
+                # Determine video args (copy or re-encode/hardcode)
+                videoArgs = "-c:v copy" # Default
+                if self.reEncodeVideo or self.hardCode:
+                    if self.hardCode:
+                        if not os.path.isfile(self.cleanSubsFileSpec):
+                             print("Warning: Hardcode requested but clean subtitle file not found.")
+                             videoArgs = self.vParams # Fallback to re-encode without subs
+                        else:
+                             # Convert SRT to ASS if needed
+                             if not hasattr(self, 'assSubsFileSpec') or not self.assSubsFileSpec:
+                                 self.assSubsFileSpec = os.path.splitext(self.cleanSubsFileSpec)[0] + '.ass'
+                             if not os.path.isfile(self.assSubsFileSpec) or os.path.getmtime(self.assSubsFileSpec) < os.path.getmtime(self.cleanSubsFileSpec):
+                                 print("Converting SRT to ASS for hardcoding...")
+                                 subConvCmd = f"ffmpeg -hide_banner -nostats -loglevel error -y -i \"{self.cleanSubsFileSpec}\" \"{self.assSubsFileSpec}\""
+                                 run_ffmpeg_command(subConvCmd, "Failed to convert subtitles to ASS format")
+                             else:
+                                 print("Using existing ASS file for hardcoding.")
+
+                             if os.path.isfile(self.assSubsFileSpec):
+                                 escaped_ass_path = self.assSubsFileSpec.replace('\\', '/').replace(':', '\\\\:')
+                                 videoArgs = f"{self.vParams} -vf \"ass='{escaped_ass_path}'\""
+                             else:
+                                 print("Warning: Failed to find or create ASS file for hardcoding. Re-encoding video without subs.")
+                                 videoArgs = self.vParams
+                    else: # Just reEncodeVideo
+                        videoArgs = self.vParams
+                # else: videoArgs remains "-c:v copy"
+
+                # Determine audio args (use self.aParams, ensure stream specifier for target stream)
+                # Remove existing stream specifiers and add the correct one
+                audioArgs = re.sub(r'-(?:c|codec):a:\d+\s+', f'-c:a:{audioStreamOnlyIndex} ', self.aParams)
+                audioArgs = re.sub(r'-c:a\s+', f'-c:a:{audioStreamOnlyIndex} ', audioArgs) # Ensure specifier if only -c:a was present
+                # If no -c:a was present at all, add it with the specifier
+                if f'-c:a:{audioStreamOnlyIndex}' not in audioArgs and f'-codec:a:{audioStreamOnlyIndex}' not in audioArgs:
+                     # Extract codec from default if possible, fallback to copy
+                     default_codec_match = re.search(r'-c:a\s+(\S+)', AUDIO_DEFAULT_PARAMS)
+                     codec_to_use = default_codec_match.group(1) if default_codec_match else 'copy'
+                     audioArgs += f" -c:a:{audioStreamOnlyIndex} {codec_to_use}"
+
+
+                # Handle subtitle embedding
                 subsArgsInput = ""
-                subsArgsEmbed = " -sn "
+                subsArgsEmbed = "-sn" # Default to no subs
+                # Map target audio stream first
+                mapArgs = f"-map 0:v -map 0:a:{audioStreamOnlyIndex}"
+                # TODO: Add back mapping for other audio streams if needed (audioUnchangedMapList logic)
 
-            ffmpegCmd = (
-                f"ffmpeg -hide_banner -nostats -loglevel error -y {'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} -i \""
-                + self.inputVidFileSpec
-                + "\""
-                + subsArgsInput
-                + audioFilter
-                + f' -map 0:v -map "[a{audioStreamOnlyIndex}]" {audioUnchangedMapList} '
-                + subsArgsEmbed
-                + videoArgs
-                + f" {self.aParams} {'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} \""
-                + self.outputVidFileSpec
-                + "\""
-            )
-            ffmpegResult = delegator.run(ffmpegCmd, block=True)
-            if (ffmpegResult.return_code != 0) or (not os.path.isfile(self.outputVidFileSpec)):
-                print(ffmpegCmd)
-                print(ffmpegResult.err)
-                raise ValueError(f'Could not process {self.inputVidFileSpec}')
-        else:
-            self.unalteredVideo = True
+                if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
+                     subsArgsInput = f" -i \"{self.cleanSubsFileSpec}\""
+                     mapArgs += " -map 1:s" # Map subs from input 1
+                     outFileParts = os.path.splitext(self.outputVidFileSpec)
+                     subs_codec = 'mov_text' if outFileParts[1] == '.mp4' else 'srt'
+                     subsArgsEmbed = f"-c:s {subs_codec} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang}"
+                # else: subsArgsEmbed remains "-sn"
 
+
+                # Construct the single ffmpeg command
+                ffmpeg_cmd_single = (
+                     f"ffmpeg -hide_banner -nostats -loglevel error -y "
+                     f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
+                     f"-i \"{self.inputVidFileSpec}\" {subsArgsInput} "
+                     f"{mapArgs} " # Map video, target audio, and potentially subs
+                     f"{videoArgs} {audioArgs} {subsArgsEmbed} " # Video codec, audio codec, subs codec/params or -sn
+                     f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                     f"\"{self.outputVidFileSpec}\""
+                )
+                run_ffmpeg_command(ffmpeg_cmd_single, "Failed to process video (single step)")
+
+
+            # Final check if output file exists
+            if not os.path.isfile(self.outputVidFileSpec):
+                 raise ValueError(f'Output file {self.outputVidFileSpec} was not created successfully.')
+            else:
+                 print(f"Successfully created output file: {self.outputVidFileSpec}")
+
+        finally:
+            # Clean up the temporary filter script file
+            if temp_filter_filepath and os.path.exists(temp_filter_filepath):
+                try:
+                    os.remove(temp_filter_filepath)
+                    print(f"Cleaned up temporary filter script: {temp_filter_filepath}")
+                except OSError as e:
+                    print(f"Warning: Could not delete temporary filter file {temp_filter_filepath}: {e}")
+
+            # Clean up other temporary files
+            print(f"Cleaning up {len(temp_files_to_clean)} temporary file(s)...")
+            for temp_file in temp_files_to_clean:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                        print(f"  Cleaned up: {temp_file}")
+                    except OSError as e:
+                        print(f"  Warning: Could not delete temporary file {temp_file}: {e}")
 
 #################################################################################
 def RunCleanvid():
@@ -648,194 +891,156 @@ def RunCleanvid():
     )
     parser.add_argument('--subs-output', help='output subtitle file', metavar='<output srt>', dest="subsOut")
     parser.add_argument(
-        '-w',
         '--swears',
-        help='text file containing profanity (with optional mapping)',
+        help='pipe-delimited swears file (default: included swears.txt)',
         default=os.path.join(__script_location__, 'swears.txt'),
-        metavar='<profanity file>',
+        metavar='<swears file>',
     )
     parser.add_argument(
-        '-l',
-        '--lang',
-        help=f'language for extracting srt from video file or srt download (default is "{SUBTITLE_DEFAULT_LANG}")',
-        default=SUBTITLE_DEFAULT_LANG,
-        metavar='<language>',
+        '--swears-pad-sec',
+        help='seconds to pad swears (default: 0.0)',
+        type=float,
+        default=0.0,
+        metavar='<pad seconds>',
+        dest="swearsPadSec",
     )
     parser.add_argument(
-        '-p', '--pad', help='pad (seconds) around profanity', metavar='<int>', dest="pad", type=float, default=0.0
+        '--embed-subs', help='embed cleaned subtitle stream (default: false)', action='store_true', dest="embedSubs"
     )
     parser.add_argument(
-        '-e',
-        '--embed-subs',
-        help='embed subtitles in resulting video file',
-        dest='embedSubs',
-        action='store_true',
-    )
-    parser.add_argument(
-        '-f',
         '--full-subs',
-        help='include all subtitles in output subtitle file (not just scrubbed)',
-        dest='fullSubs',
+        help='output full subtitle file with swears replaced (default: false, only outputs swear lines)',
         action='store_true',
+        dest="fullSubs",
     )
     parser.add_argument(
         '--subs-only',
-        help='only operate on subtitles (do not alter audio)',
-        dest='subsOnly',
+        help='only generate subtitle file, do not process video (default: false)',
         action='store_true',
-    )
-    parser.add_argument(
-        '--offline',
-        help="don't attempt to download subtitles",
-        dest='offline',
-        action='store_true',
+        dest="subsOnly",
     )
     parser.add_argument(
         '--edl',
-        help='generate MPlayer EDL file with mute actions (also implies --subs-only)',
-        dest='edl',
+        help='generate EDL file for video editors (also implies --subs-only) (default: false)',
         action='store_true',
     )
     parser.add_argument(
         '--json',
-        help='generate JSON file with muted subtitles and their contents',
-        dest='json',
+        help='generate JSON file detailing edits (default: false)',
         action='store_true',
-    )
-    parser.add_argument('--re-encode-video', help='Re-encode video', dest='reEncodeVideo', action='store_true')
-    parser.add_argument('--re-encode-audio', help='Re-encode audio', dest='reEncodeAudio', action='store_true')
-    parser.add_argument(
-        '-b', '--burn', help='Hard-coded subtitles (implies re-encode)', dest='hardCode', action='store_true'
+        dest="jsonDump",
     )
     parser.add_argument(
-        '-v',
-        '--video-params',
-        help='Video parameters for ffmpeg (only if re-encoding)',
-        dest='vParams',
+        '--subs-lang',
+        help='subtitle language (default: eng) (append :<index> to force specific stream index, e.g. eng:2)',
+        default=SUBTITLE_DEFAULT_LANG,
+        metavar='<language>',
+        dest="subsLang",
+    )
+    parser.add_argument(
+        '--re-encode-video',
+        help='force re-encode of video stream (default: false)',
+        action='store_true',
+        dest="reEncodeVideo",
+    )
+    parser.add_argument(
+        '--re-encode-audio',
+        help='force re-encode of audio stream (default: false)',
+        action='store_true',
+        dest="reEncodeAudio",
+    )
+    parser.add_argument(
+        '--hard-code',
+        help='hard-code (burn) cleaned subtitles into video stream (implies --re-encode-video) (default: false)',
+        action='store_true',
+        dest="hardCode",
+    )
+    parser.add_argument(
+        '--vparams',
+        help=f'video encoding parameters (default: {VIDEO_DEFAULT_PARAMS}) (prefix with base64: if needed)',
         default=VIDEO_DEFAULT_PARAMS,
-    )
-    parser.add_argument(
-        '-a', '--audio-params', help='Audio parameters for ffmpeg', dest='aParams', default=AUDIO_DEFAULT_PARAMS
-    )
-    parser.add_argument(
-        '-d', '--downmix', help='Downmix to stereo (if not already stereo)', dest='aDownmix', action='store_true'
+        metavar='<ffmpeg video args>',
     )
     parser.add_argument(
         '--audio-stream-index',
-        help='Index of audio stream to process',
-        metavar='<int>',
-        dest="audioStreamIdx",
+        help='audio stream index to process (default: auto-detect if only one stream)',
         type=int,
         default=None,
+        metavar='<index>',
+        dest="audioStreamIdx",
     )
     parser.add_argument(
-        '--audio-stream-list',
-        help='Show list of audio streams (to get index for --audio-stream-index)',
+        '--aparams',
+        help=f'audio encoding parameters (default: {AUDIO_DEFAULT_PARAMS}) (prefix with base64: if needed)',
+        default=AUDIO_DEFAULT_PARAMS,
+        metavar='<ffmpeg audio args>',
+    )
+    parser.add_argument(
+        '--audio-downmix',
+        help='downmix audio to stereo if input has more channels (default: false)',
         action='store_true',
-        dest="audioStreamIdxList",
+        dest="aDownmix",
     )
     parser.add_argument(
         '--threads-input',
-        help='ffmpeg global options -threads value',
-        metavar='<int>',
-        dest="threadsInput",
+        help='set threads for ffmpeg input processing (default: auto)',
         type=int,
         default=None,
+        metavar='<threads>',
+        dest="threadsInput",
     )
     parser.add_argument(
         '--threads-encoding',
-        help='ffmpeg encoding options -threads value',
-        metavar='<int>',
-        dest="threadsEncoding",
+        help='set threads for ffmpeg output encoding (default: auto)',
         type=int,
         default=None,
+        metavar='<threads>',
+        dest="threadsEncoding",
     )
     parser.add_argument(
-        '--threads',
-        help='ffmpeg -threads value (for both global options and encoding)',
-        metavar='<int>',
-        dest="threads",
-        type=int,
-        default=None,
+        '--offline', help='do not attempt to download subtitles (default: false)', action='store_true'
     )
-    parser.set_defaults(
-        audioStreamIdxList=False,
-        edl=False,
-        embedSubs=False,
-        fullSubs=False,
-        hardCode=False,
-        offline=False,
-        reEncodeAudio=False,
-        reEncodeVideo=False,
-        subsOnly=False,
-    )
+
     args = parser.parse_args()
 
-    if args.audioStreamIdxList:
-        audioStreamsInfo = GetAudioStreamsInfo(args.input)
-        # e.g.:
-        #   1: aac, 44100 Hz, stereo, eng
-        #   3: opus, 48000 Hz, stereo, jpn
-        print(
-            '\n'.join(
-                [
-                    f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
-                    for x in audioStreamsInfo.get("streams", [])
-                ]
-            )
-        )
+    if args.hardCode:
+        args.reEncodeVideo = True
 
-    else:
-        inFile = args.input
-        outFile = args.output
-        subsFile = args.subs
-        lang = args.lang
-        plexFile = args.plexAutoSkipJson
-        if inFile:
-            inFileParts = os.path.splitext(inFile)
-            if not outFile:
-                outFile = inFileParts[0] + "_clean" + inFileParts[1]
-            if not subsFile:
-                subsFile = GetSubtitles(inFile, lang, args.offline)
-            if args.plexAutoSkipId and not plexFile:
-                plexFile = inFileParts[0] + "_PlexAutoSkip_clean.json"
+    if not args.output:
+        inParts = os.path.splitext(args.input)
+        args.output = inParts[0] + "_clean" + inParts[1]
 
-        if plexFile and not args.plexAutoSkipId:
-            raise ValueError(
-                f'Content ID must be specified if creating a PlexAutoSkip JSON file (https://github.com/mdhiggins/PlexAutoSkip/wiki/Identifiers)'
-            )
+    if not args.subs:
+        args.subs = GetSubtitles(args.input, args.subsLang, args.offline)
 
-        cleaner = VidCleaner(
-            inFile,
-            subsFile,
-            outFile,
-            args.subsOut,
-            args.swears,
-            args.pad,
-            args.embedSubs,
-            args.fullSubs,
-            args.subsOnly,
-            args.edl,
-            args.json,
-            lang,
-            args.reEncodeVideo,
-            args.reEncodeAudio,
-            args.hardCode,
-            args.vParams,
-            args.audioStreamIdx,
-            args.aParams,
-            args.aDownmix,
-            args.threadsInput if args.threadsInput is not None else args.threads,
-            args.threadsEncoding if args.threadsEncoding is not None else args.threads,
-            plexFile,
-            args.plexAutoSkipId,
-        )
-        cleaner.CreateCleanSubAndMuteList()
-        cleaner.MultiplexCleanVideo()
+    cleaner = VidCleaner(
+        args.input,
+        args.subs,
+        args.output,
+        args.subsOut,
+        args.swears,
+        args.swearsPadSec,
+        args.embedSubs,
+        args.fullSubs,
+        args.subsOnly,
+        args.edl,
+        args.jsonDump,
+        args.subsLang,
+        args.reEncodeVideo,
+        args.reEncodeAudio,
+        args.hardCode,
+        args.vparams,
+        args.audioStreamIdx,
+        args.aparams,
+        args.aDownmix,
+        args.threadsInput,
+        args.threadsEncoding,
+        args.plexAutoSkipJson,
+        args.plexAutoSkipId,
+    )
+    cleaner.CreateCleanSubAndMuteList()
+    cleaner.MultiplexCleanVideo()
 
 
-#################################################################################
-if __name__ == '__main__':
+if __name__ == "__main__":
     RunCleanvid()
-
-#################################################################################
