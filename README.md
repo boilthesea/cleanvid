@@ -95,6 +95,7 @@ options:
   --threads-encoding <int>
                         ffmpeg encoding options -threads value
   --threads <int>       ffmpeg -threads value (for both global options and encoding)
+  --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
 ```
 
 ### Docker
