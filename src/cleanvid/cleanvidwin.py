@@ -585,11 +585,10 @@ class VidCleaner(object):
                     f'Audio stream index {self.audioStreamIdx} is invalid for {self.inputVidFileSpec}'
                 )
 
-            # Apply stream index to aParams if needed (original logic modified)
-            # This might add complexity if aParams already has stream specifiers.
-            # Let's simplify: we'll handle codec selection explicitly later.
-            # self.aParams = re.sub(r"-c:a(\s+)", rf"-c:a:{str(audioStreamOnlyIndex)}\1", self.aParams)
+            # Apply stream index to aParams if needed (original logic modified) - This is handled later in muxing if needed
             print(f"Selected audio stream: Input Index={self.audioStreamIdx}, FFmpeg Map Index=0:a:{audioStreamOnlyIndex}")
+            # Store the list of actual audio streams for later use in mapping
+            self.actual_audio_streams = actual_streams
 
 
             # --- Determine if audio filtering is needed ---
@@ -605,53 +604,17 @@ class VidCleaner(object):
             if audio_filtering_active:
                 print("Audio filtering is active. Using multi-step ffmpeg process.")
 
-                # == Step 1: Split Streams ==
-                print("Step 1: Splitting video and audio streams...")
+                # == Step 1: Extract Target Audio ==
+                print("Step 1: Extracting target audio stream...")
 
-                # Get input format info to determine temp video container
-                input_format_info = GetFormatAndStreamInfo(self.inputVidFileSpec)
-                temp_video_suffix = ".mkv" # Default fallback
-                if input_format_info and 'format' in input_format_info and 'format_name' in input_format_info['format']:
-                    format_name = input_format_info['format']['format_name']
-                    # Handle common cases and potential lists like 'mov,mp4,m4a...'
-                    if 'mp4' in format_name:
-                        temp_video_suffix = ".mp4"
-                    elif 'mkv' in format_name:
-                        temp_video_suffix = ".mkv"
-                    elif 'avi' in format_name:
-                        temp_video_suffix = ".avi"
-                    # Add more formats if needed, or use the first part if it's a list
-                    elif ',' in format_name:
-                         temp_video_suffix = f".{format_name.split(',')[0]}"
-                    else:
-                         temp_video_suffix = f".{format_name}"
-                    print(f"  Detected input format: {format_name}, using suffix: {temp_video_suffix}")
-                else:
-                    print(f"  Warning: Could not detect input format, defaulting temp video suffix to {temp_video_suffix}")
-
-
-                # Create temporary files (manage deletion manually in finally)
-                temp_video_file = tempfile.NamedTemporaryFile(suffix=temp_video_suffix, delete=False)
+                # Create temporary file for raw audio
                 temp_raw_audio_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                temp_video_filepath = temp_video_file.name
                 temp_raw_audio_filepath = temp_raw_audio_file.name
-                temp_video_file.close() # Close handles immediately
                 temp_raw_audio_file.close()
-                temp_files_to_clean.extend([temp_video_filepath, temp_raw_audio_filepath])
-                print(f"  Temp video file: {temp_video_filepath}")
+                temp_files_to_clean.append(temp_raw_audio_filepath) # Only add audio file now
                 print(f"  Temp raw audio file: {temp_raw_audio_filepath}")
 
-                # 1a: Extract video (copy)
-                ffmpeg_split_video_cmd = (
-                    f"ffmpeg -hide_banner -nostats -loglevel error -y "
-                    f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
-                    f"-i \"{self.inputVidFileSpec}\" "
-                    f"-map 0:v:0 -c:v copy -dn -sn " # Map ONLY the first video stream, copy codec, drop data/subs
-                    f"\"{temp_video_filepath}\""
-                )
-                run_ffmpeg_command(ffmpeg_split_video_cmd, "Failed to split video stream")
-
-                # 1b: Extract and decode audio to WAV
+                # Extract and decode audio to WAV
                 ffmpeg_split_audio_cmd = (
                     f"ffmpeg -hide_banner -nostats -loglevel error -y "
                     f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
@@ -732,54 +695,77 @@ class VidCleaner(object):
                 # == Step 3: Mux Streams ==
                 print("Step 3: Muxing final video...")
 
-                # Base mux command inputs and maps
-                mux_inputs = f"-i \"{temp_video_filepath}\" -i \"{temp_filtered_audio_filepath}\""
-                mux_maps = "-map 0:v -map 1:a"
-                # Start with copy codecs, may be overridden
-                mux_codecs = "-c:v copy -c:a copy"
+                # --- Construct Mux Command ---
+                # Inputs: Original Video (0), Filtered Audio (1), Optional Clean Subs (2)
+                mux_inputs = f"-i \"{self.inputVidFileSpec}\" -i \"{temp_filtered_audio_filepath}\""
+                subs_input_index = 2 # Starts at 2 if subs are added
 
-                # Handle subtitle embedding (Input 2)
+                # Mapping: Video, Filtered Audio, Other Audio, Optional Subs/Data
+                mux_maps = "-map 0:v -map 1:a" # Map all video from input 0, filtered audio from input 1
+                # Map other audio streams from input 0 (original video)
+                audioUnchangedMapList = ' '.join(
+                    f'-map 0:a:{i}'
+                    for i, stream in enumerate(self.actual_audio_streams) # Use stored stream list
+                    if stream.get('index') != self.audioStreamIdx # Exclude the stream we filtered
+                )
+                if audioUnchangedMapList:
+                    mux_maps += f" {audioUnchangedMapList}"
+                # Optionally map data and attachments from original input
+                mux_maps += " -map 0:d? -map 0:t?"
+
+                # Codecs: Copy video, copy filtered audio, copy other audio, handle subs
+                mux_codecs = "-c:v copy -c:a copy -c:d copy -c:t copy" # Start with copy for all mapped streams
+
+                # Handle subtitle embedding/copying/excluding
                 if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
                     mux_inputs += f" -i \"{self.cleanSubsFileSpec}\""
-                    mux_maps += " -map 2:s" # Map subtitles from input 2
+                    mux_maps += f" -map {subs_input_index}:s" # Map subtitles from the new input
                     outFileParts = os.path.splitext(self.outputVidFileSpec)
                     subs_codec = 'mov_text' if outFileParts[1] == '.mp4' else 'srt'
-                    # Add subtitle codec, disposition, metadata. Replace existing -c copy or add if needed
+                    # Add subtitle codec, disposition, metadata.
                     mux_codecs += f" -c:s {subs_codec} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang}"
                 else:
-                     mux_codecs += " -sn" # Explicitly remove subs if not embedding
+                    # If not embedding external subs, exclude all subs from original input
+                    mux_codecs += " -sn" # Explicitly remove subs
 
-                # Handle hardcoding (overrides video copy in mux step)
+                # Handle hardcoding (overrides video copy)
                 if self.hardCode:
-                     if not os.path.isfile(self.cleanSubsFileSpec):
-                         print("Warning: Hardcode requested but clean subtitle file not found.")
-                     else:
-                         # Convert SRT to ASS if needed (reuse existing logic/variable)
-                         # Ensure assSubsFileSpec is defined within the class scope if needed elsewhere
-                         if not hasattr(self, 'assSubsFileSpec') or not self.assSubsFileSpec:
-                             self.assSubsFileSpec = os.path.splitext(self.cleanSubsFileSpec)[0] + '.ass'
+                    if not os.path.isfile(self.cleanSubsFileSpec):
+                        print("Warning: Hardcode requested but clean subtitle file not found.")
+                        # If hardcoding fails, we still need to re-encode if reEncodeVideo was true
+                        if self.reEncodeVideo:
+                             mux_codecs = re.sub(r'-c:v\s+copy', self.vParams, mux_codecs)
+                    else:
+                        # Convert SRT to ASS if needed
+                        if not hasattr(self, 'assSubsFileSpec') or not self.assSubsFileSpec:
+                            self.assSubsFileSpec = os.path.splitext(self.cleanSubsFileSpec)[0] + '.ass'
+                        if not os.path.isfile(self.assSubsFileSpec) or os.path.getmtime(self.assSubsFileSpec) < os.path.getmtime(self.cleanSubsFileSpec):
+                            print("Converting SRT to ASS for hardcoding...")
+                            subConvCmd = f"ffmpeg -hide_banner -nostats -loglevel error -y -i \"{self.cleanSubsFileSpec}\" \"{self.assSubsFileSpec}\""
+                            run_ffmpeg_command(subConvCmd, "Failed to convert subtitles to ASS format")
+                        else:
+                            print("Using existing ASS file for hardcoding.")
 
-                         # Check if ASS file exists or needs conversion
-                         if not os.path.isfile(self.assSubsFileSpec) or os.path.getmtime(self.assSubsFileSpec) < os.path.getmtime(self.cleanSubsFileSpec):
-                             print("Converting SRT to ASS for hardcoding...")
-                             subConvCmd = f"ffmpeg -hide_banner -nostats -loglevel error -y -i \"{self.cleanSubsFileSpec}\" \"{self.assSubsFileSpec}\""
-                             run_ffmpeg_command(subConvCmd, "Failed to convert subtitles to ASS format")
-                             # Don't add ASS to temp_files_to_clean if we want to keep it
-                         else:
-                             print("Using existing ASS file for hardcoding.")
+                        if os.path.isfile(self.assSubsFileSpec):
+                            print("Applying hardcoded subtitles...")
+                            # Replace video codec copy with re-encode + filter
+                            video_encode_params = self.vParams # Use user/default encode params
+                            escaped_ass_path = self.assSubsFileSpec.replace('\\', '/').replace(':', '\\\\:')
+                            # Ensure we replace -c:v copy, even if other codecs were added
+                            if "-c:v copy" in mux_codecs:
+                                mux_codecs = mux_codecs.replace('-c:v copy', f"{video_encode_params} -vf \"ass='{escaped_ass_path}'\"")
+                            else: # If -c:v copy was already replaced (e.g., by reEncodeVideo), add the filter
+                                mux_codecs += f" -vf \"ass='{escaped_ass_path}'\""
+                        else:
+                            print("Warning: Failed to find or create ASS file for hardcoding.")
+                            # Fallback to re-encoding if requested, even without subs
+                            if self.reEncodeVideo:
+                                 mux_codecs = re.sub(r'-c:v\s+copy', self.vParams, mux_codecs)
+                elif self.reEncodeVideo: # Handle reEncodeVideo flag even if not hardcoding
+                     mux_codecs = re.sub(r'-c:v\s+copy', self.vParams, mux_codecs)
 
 
-                         if os.path.isfile(self.assSubsFileSpec):
-                             print("Applying hardcoded subtitles...")
-                             # Replace video codec copy with re-encode + filter
-                             video_encode_params = self.vParams # Use user/default encode params
-                             # Escape path for ffmpeg filter syntax (Windows needs special care)
-                             escaped_ass_path = self.assSubsFileSpec.replace('\\', '/').replace(':', '\\\\:')
-                             mux_codecs = re.sub(r'-c:v\s+copy', f"{video_encode_params} -vf \"ass='{escaped_ass_path}'\"", mux_codecs)
-                         else:
-                             print("Warning: Failed to find or create ASS file for hardcoding.")
-
-
+                # Construct the final mux command
                 ffmpeg_mux_cmd = (
                     f"ffmpeg -hide_banner -nostats -loglevel error -y "
                     f"{mux_inputs} "
@@ -877,10 +863,10 @@ class VidCleaner(object):
                 except OSError as e:
                     print(f"Warning: Could not delete temporary filter file {temp_filter_filepath}: {e}")
 
-            # Clean up other temporary files
+            # Clean up other temporary files (now only includes audio and filter script)
             print(f"Cleaning up {len(temp_files_to_clean)} temporary file(s)...")
             for temp_file in temp_files_to_clean:
-                if os.path.exists(temp_file):
+                if temp_file and os.path.exists(temp_file): # Add check if temp_file is not None
                     try:
                         os.remove(temp_file)
                         print(f"  Cleaned up: {temp_file}")
