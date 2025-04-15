@@ -608,9 +608,30 @@ class VidCleaner(object):
                 # == Step 1: Split Streams ==
                 print("Step 1: Splitting video and audio streams...")
 
+                # Get input format info to determine temp video container
+                input_format_info = GetFormatAndStreamInfo(self.inputVidFileSpec)
+                temp_video_suffix = ".mkv" # Default fallback
+                if input_format_info and 'format' in input_format_info and 'format_name' in input_format_info['format']:
+                    format_name = input_format_info['format']['format_name']
+                    # Handle common cases and potential lists like 'mov,mp4,m4a...'
+                    if 'mp4' in format_name:
+                        temp_video_suffix = ".mp4"
+                    elif 'mkv' in format_name:
+                        temp_video_suffix = ".mkv"
+                    elif 'avi' in format_name:
+                        temp_video_suffix = ".avi"
+                    # Add more formats if needed, or use the first part if it's a list
+                    elif ',' in format_name:
+                         temp_video_suffix = f".{format_name.split(',')[0]}"
+                    else:
+                         temp_video_suffix = f".{format_name}"
+                    print(f"  Detected input format: {format_name}, using suffix: {temp_video_suffix}")
+                else:
+                    print(f"  Warning: Could not detect input format, defaulting temp video suffix to {temp_video_suffix}")
+
+
                 # Create temporary files (manage deletion manually in finally)
-                # Use mkv as intermediate container for video, wav for raw audio
-                temp_video_file = tempfile.NamedTemporaryFile(suffix=".mkv", delete=False)
+                temp_video_file = tempfile.NamedTemporaryFile(suffix=temp_video_suffix, delete=False)
                 temp_raw_audio_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
                 temp_video_filepath = temp_video_file.name
                 temp_raw_audio_filepath = temp_raw_audio_file.name
@@ -625,7 +646,7 @@ class VidCleaner(object):
                     f"ffmpeg -hide_banner -nostats -loglevel error -y "
                     f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
                     f"-i \"{self.inputVidFileSpec}\" "
-                    f"-map 0:v -c:v copy -dn -sn " # Copy video, drop data/subs
+                    f"-map 0:v:0 -c:v copy -dn -sn " # Map ONLY the first video stream, copy codec, drop data/subs
                     f"\"{temp_video_filepath}\""
                 )
                 run_ffmpeg_command(ffmpeg_split_video_cmd, "Failed to split video stream")
