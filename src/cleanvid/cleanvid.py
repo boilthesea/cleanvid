@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import subprocess
 import re
 import pysrt
 import delegator
@@ -758,6 +759,13 @@ def RunCleanvid():
         type=int,
         default=None,
     )
+    # --- Add --win flag ---
+    parser.add_argument(
+        '--win',
+        help='Use Windows-compatible multi-step processing (avoids command length errors)',
+        action='store_true',
+        dest="use_win_method" # Use a distinct destination variable
+    )
     parser.set_defaults(
         audioStreamIdxList=False,
         edl=False,
@@ -768,24 +776,68 @@ def RunCleanvid():
         reEncodeAudio=False,
         reEncodeVideo=False,
         subsOnly=False,
+        use_win_method=False, # Default to False
     )
     args = parser.parse_args()
 
-    if args.audioStreamIdxList:
-        audioStreamsInfo = GetAudioStreamsInfo(args.input)
-        # e.g.:
-        #   1: aac, 44100 Hz, stereo, eng
-        #   3: opus, 48000 Hz, stereo, jpn
-        print(
-            '\n'.join(
-                [
-                    f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
-                    for x in audioStreamsInfo.get("streams", [])
-                ]
-            )
-        )
+    # --- Check for --win flag ---
+    if args.use_win_method:
+        # --- Execute cleanvidwin.py ---
+        print("Windows compatibility mode requested (--win). Delegating to cleanvidwin.py...")
 
+        # Construct path to cleanvidwin.py (assuming it's in the same directory)
+        script_dir = os.path.dirname(__file__)
+        cleanvidwin_path = os.path.join(script_dir, 'cleanvidwin.py')
+
+        if not os.path.exists(cleanvidwin_path):
+             print(f"Error: cleanvidwin.py not found at {cleanvidwin_path}", file=sys.stderr)
+             sys.exit(1)
+
+        # Prepare arguments for cleanvidwin.py (pass all except the --win flag itself)
+        win_args = [arg for arg in sys.argv[1:] if arg != '--win']
+        print(f"Executing: {sys.executable} {cleanvidwin_path} {' '.join(win_args)}")
+
+        # Execute cleanvidwin.py using the same Python interpreter
+        try:
+            process_result = subprocess.run(
+                [sys.executable, cleanvidwin_path] + win_args,
+                check=True, # Raise exception on non-zero exit code
+                capture_output=False, # Let output go directly to console
+                text=True,
+                # Ensure environment variables like PATH are passed through if needed by ffmpeg
+                env=os.environ
+            )
+            print("cleanvidwin.py completed successfully.")
+            sys.exit(0) # Exit successfully after delegation
+        except subprocess.CalledProcessError as e:
+            print(f"Error executing cleanvidwin.py: {e}", file=sys.stderr)
+            # Optionally print stdout/stderr from the failed process if captured
+            # print(f"Stdout:\n{e.stdout}", file=sys.stderr)
+            # print(f"Stderr:\n{e.stderr}", file=sys.stderr)
+            sys.exit(e.returncode) # Exit with the same error code
+        except Exception as e:
+             print(f"An unexpected error occurred while trying to run cleanvidwin.py: {e}", file=sys.stderr)
+             sys.exit(1)
+
+    # --- Original Logic (if --win is not used) ---
     else:
+        print("Using standard processing method. Use --win for Windows compatibility mode.")
+        if args.audioStreamIdxList:
+            audioStreamsInfo = GetAudioStreamsInfo(args.input)
+            # e.g.:
+            #   1: aac, 44100 Hz, stereo, eng
+            #   3: opus, 48000 Hz, stereo, jpn
+            print(
+                '\n'.join(
+                    [
+                        f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
+                        for x in audioStreamsInfo.get("streams", [])
+                    ]
+                )
+            )
+            sys.exit(0) # Exit after listing streams
+
+        # Proceed with normal processing setup
         inFile = args.input
         outFile = args.output
         subsFile = args.subs
@@ -805,33 +857,58 @@ def RunCleanvid():
                 f'Content ID must be specified if creating a PlexAutoSkip JSON file (https://github.com/mdhiggins/PlexAutoSkip/wiki/Identifiers)'
             )
 
-        cleaner = VidCleaner(
-            inFile,
-            subsFile,
-            outFile,
-            args.subsOut,
-            args.swears,
-            args.pad,
-            args.embedSubs,
-            args.fullSubs,
-            args.subsOnly,
-            args.edl,
-            args.json,
-            lang,
-            args.reEncodeVideo,
-            args.reEncodeAudio,
-            args.hardCode,
-            args.vParams,
-            args.audioStreamIdx,
-            args.aParams,
-            args.aDownmix,
-            args.threadsInput if args.threadsInput is not None else args.threads,
-            args.threadsEncoding if args.threadsEncoding is not None else args.threads,
-            plexFile,
-            args.plexAutoSkipId,
-        )
-        cleaner.CreateCleanSubAndMuteList()
-        cleaner.MultiplexCleanVideo()
+        # Instantiate the cleaner
+        try:
+            cleaner = VidCleaner(
+                inFile,
+                subsFile,
+                outFile,
+                args.subsOut,
+                args.swears,
+                args.pad,
+                args.embedSubs,
+                args.fullSubs,
+                args.subsOnly,
+                args.edl,
+                args.json,
+                lang,
+                args.reEncodeVideo,
+                args.reEncodeAudio,
+                args.hardCode,
+                args.vParams,
+                args.audioStreamIdx,
+                args.aParams,
+                args.aDownmix,
+                args.threadsInput if args.threadsInput is not None else args.threads,
+                args.threadsEncoding if args.threadsEncoding is not None else args.threads,
+                plexFile,
+                args.plexAutoSkipId,
+            )
+            cleaner.CreateCleanSubAndMuteList()
+            # --- Wrap the potentially failing call ---
+            cleaner.MultiplexCleanVideo()
+            print("Processing completed successfully using standard method.")
+
+        except ValueError as e:
+            print(f"\n--- Processing Error ---", file=sys.stderr)
+            print(f"Error details: {e}", file=sys.stderr)
+            # Check if it's likely the command length error (heuristic)
+            is_windows = sys.platform.startswith('win')
+            # Suggest --win only on Windows and if the error isn't about missing files/streams
+            # (More specific error checking could be added here if needed)
+            if is_windows:
+                 print("\nSuggestion: Processing failed.", file=sys.stderr)
+                 print("If you are on Windows and suspect a command-line length error,", file=sys.stderr)
+                 print("try running the command again with the --win flag added.", file=sys.stderr)
+            sys.exit(1) # Exit with error code after printing suggestion
+        except Exception as e:
+             # Catch other potential errors during original processing
+             print(f"\n--- Unexpected Error ---", file=sys.stderr)
+             print(f"Error details: {e}", file=sys.stderr)
+             # Consider printing traceback for unexpected errors
+             # import traceback
+             # traceback.print_exc(file=sys.stderr)
+             sys.exit(1)
 
 
 #################################################################################
