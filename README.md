@@ -99,7 +99,7 @@ options:
   --threads <int>       ffmpeg -threads value (for both global options and encoding)
   --alass               Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)
   --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
-100| ```
+```
 
 ### Docker
 
