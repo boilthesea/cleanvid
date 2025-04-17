@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import shutil
+import tempfile
 import sys
 import subprocess
 import re
@@ -759,6 +760,12 @@ def RunCleanvid():
         type=int,
         default=None,
     )
+    parser.add_argument(
+        '--alass',
+        help='Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)',
+        action='store_true',
+        dest="use_alass"
+    )
     # --- Add --win flag ---
     parser.add_argument(
         '--win',
@@ -776,6 +783,7 @@ def RunCleanvid():
         reEncodeAudio=False,
         reEncodeVideo=False,
         subsOnly=False,
+        use_alass=False, # Default alass to False
         use_win_method=False, # Default to False
     )
     args = parser.parse_args()
@@ -852,37 +860,71 @@ def RunCleanvid():
             if args.plexAutoSkipId and not plexFile:
                 plexFile = inFileParts[0] + "_PlexAutoSkip_clean.json"
 
+        # --- Optional Alass Synchronization ---
+        alass_temp_srt_file = None # To track temp file for cleanup
+        if args.use_alass:
+            if subsFile and os.path.isfile(subsFile):
+                print(f"Attempting subtitle synchronization with alass for: {subsFile}")
+                try:
+                    # Create a temporary file for alass output
+                    # Use NamedTemporaryFile correctly - create it, get name, close handle
+                    temp_f = tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode='w', encoding='utf-8')
+                    alass_temp_srt_file = temp_f.name
+                    temp_f.close() # Close the handle so alass can write to it (on Windows)
+                    print(f"  Using temporary file for alass output: {alass_temp_srt_file}")
+
+                    alass_cmd = f'alass "{inFile}" "{subsFile}" "{alass_temp_srt_file}"'
+                    print(f"  Executing: {alass_cmd}")
+                    alass_result = delegator.run(alass_cmd, block=True)
+
+                    if alass_result.return_code == 0 and os.path.isfile(alass_temp_srt_file) and os.path.getsize(alass_temp_srt_file) > 0:
+                        print(f"  Alass synchronization successful. Using synced subtitles: {alass_temp_srt_file}")
+                        subsFile = alass_temp_srt_file # Update subsFile to point to the synced version
+                    else:
+                        print(f"  Warning: Alass synchronization failed (return code: {alass_result.return_code}). Proceeding with original subtitles.", file=sys.stderr)
+                        print(f"  Alass stderr: {alass_result.err}", file=sys.stderr)
+                        # Clean up the potentially empty/failed temp file immediately
+                        if os.path.exists(alass_temp_srt_file):
+                            os.remove(alass_temp_srt_file)
+                        alass_temp_srt_file = None # Reset tracker
+                except Exception as e:
+                    print(f"  Warning: An error occurred during alass execution: {e}. Proceeding with original subtitles.", file=sys.stderr)
+                    if alass_temp_srt_file and os.path.exists(alass_temp_srt_file): os.remove(alass_temp_srt_file) # Cleanup on exception
+                    alass_temp_srt_file = None # Reset tracker
+            else:
+                print("  Warning: --alass flag specified, but no valid subtitle file found to synchronize.", file=sys.stderr)
+
         if plexFile and not args.plexAutoSkipId:
             raise ValueError(
                 f'Content ID must be specified if creating a PlexAutoSkip JSON file (https://github.com/mdhiggins/PlexAutoSkip/wiki/Identifiers)'
             )
 
-        # Instantiate the cleaner
+        # Instantiate the cleaner and run processing within try/finally for cleanup
         try:
             cleaner = VidCleaner(
-                inFile,
-                subsFile,
-                outFile,
-                args.subsOut,
-                args.swears,
-                args.pad,
-                args.embedSubs,
-                args.fullSubs,
-                args.subsOnly,
-                args.edl,
-                args.json,
-                lang,
-                args.reEncodeVideo,
-                args.reEncodeAudio,
-                args.hardCode,
-                args.vParams,
-                args.audioStreamIdx,
-                args.aParams,
-                args.aDownmix,
-                args.threadsInput if args.threadsInput is not None else args.threads,
-                args.threadsEncoding if args.threadsEncoding is not None else args.threads,
-                plexFile,
-                args.plexAutoSkipId,
+                 inFile,
+                 subsFile, # This will be the original or the alass temp file
+                 outFile,
+                 args.subsOut,
+                 args.swears,
+                 args.pad,
+                 args.embedSubs,
+                 args.fullSubs,
+                 args.subsOnly,
+                 args.edl,
+                 args.json,
+                 lang,
+                 args.reEncodeVideo,
+                 args.reEncodeAudio,
+                 args.hardCode,
+                 args.vParams,
+                 args.audioStreamIdx,
+                 args.aParams,
+                 args.aDownmix,
+                 args.threadsInput if args.threadsInput is not None else args.threads,
+                 args.threadsEncoding if args.threadsEncoding is not None else args.threads,
+                 plexFile,
+                 args.plexAutoSkipId,
             )
             cleaner.CreateCleanSubAndMuteList()
             # --- Wrap the potentially failing call ---
@@ -909,6 +951,11 @@ def RunCleanvid():
              # import traceback
              # traceback.print_exc(file=sys.stderr)
              sys.exit(1)
+        finally:
+            # --- Cleanup Alass Temp File ---
+            if alass_temp_srt_file and os.path.exists(alass_temp_srt_file):
+                print(f"Cleaning up temporary alass file: {alass_temp_srt_file}")
+                os.remove(alass_temp_srt_file)
 
 
 #################################################################################

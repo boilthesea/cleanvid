@@ -5,9 +5,10 @@
 **cleanvid** is a little script to mute profanity in video files in a few simple steps:
 
 1. The user provides as input a video file and matching `.srt` subtitle file. If subtitles are not provided explicitly, they will be extracted from the video file if possible; if not, [`subliminal`](https://github.com/Diaoul/subliminal) is used to attempt to download the best matching `.srt` file.
-2. [`pysrt`](https://github.com/byroot/pysrt) is used to parse the `.srt` file, and each entry is checked against a [list](./src/cleanvid/swears.txt) of profanity or other words or phrases you'd like muted. Mappings can be provided (eg., map "sh*t" to "poop"), otherwise the word will be replaced with *****.
-3. A new "clean" `.srt` file is created. with *only* those phrases containing the censored/replaced objectional language.
-4. [`ffmpeg`](https://www.ffmpeg.org/) is used to create a cleaned video file. This file contains the original video stream, but the specified audio stream is muted during the segments containing objectional language. That audio stream is re-encoded and remultiplexed back together with the video. Optionally, the clean `.srt` file can be embedded in the cleaned video file as a subtitle track.
+2. Optionally (using the `--alass` flag), [`alass`](https://github.com/kaegi/alass) (Automatic Language-Agnostic Subtitle Synchronization) can be used to synchronize the obtained subtitles with the video's audio track, correcting offsets and timing issues.
+3. [`pysrt`](https://github.com/byroot/pysrt) is used to parse the (potentially synchronized) `.srt` file, and each entry is checked against a [list](./src/cleanvid/swears.txt) of profanity or other words or phrases you'd like muted. Mappings can be provided (eg., map "sh*t" to "poop"), otherwise the word will be replaced with *****.
+4. A new "clean" `.srt` file is created. with *only* those phrases containing the censored/replaced objectional language (unless `--full-subs` is used).
+5. [`ffmpeg`](https://www.ffmpeg.org/) is used to create a cleaned video file. This file contains the original video stream, but the specified audio stream is muted during the segments containing objectional language. That audio stream is re-encoded and remultiplexed back together with the video. Optionally, the clean `.srt` file can be embedded in the cleaned video file as a subtitle track.
 
 You can then use your favorite media player to play the cleaned video file together with the cleaned subtitles.
 
@@ -43,8 +44,9 @@ python3 -m pip install -U 'git+https://github.com/mmguero/cleanvid'
 * [delegator.py](https://github.com/kennethreitz/delegator.py)
 * [pysrt](https://github.com/byroot/pysrt)
 * [subliminal](https://github.com/Diaoul/subliminal)
+* [`alass`](https://github.com/kaegi/alass)* (Optional, needed for `--alass` synchronization)
 
-To install FFmpeg, use your operating system's package manager or install binaries from [ffmpeg.org](https://www.ffmpeg.org/download.html). The Python dependencies will be installed automatically if you are using `pip` to install cleanvid.
+To install FFmpeg, use your operating system's package manager or install binaries from [ffmpeg.org](https://www.ffmpeg.org/download.html). The Python dependencies will be installed automatically if you are using `pip` to install cleanvid. To use the optional subtitle synchronization feature, install [`alass`](https://github.com/kaegi/alass) from its repository and ensure the executable (e.g., `alass.bat` on Windows) is in your system's PATH.
 
 ## usage
 
@@ -95,8 +97,9 @@ options:
   --threads-encoding <int>
                         ffmpeg encoding options -threads value
   --threads <int>       ffmpeg -threads value (for both global options and encoding)
+  --alass               Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)
   --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
-```
+100| ```
 
 ### Docker
 
@@ -123,3 +126,4 @@ Thanks to:
 * [delegator.py](https://github.com/kennethreitz/delegator.py) developer Kenneth Reitz and contributors
 * [pysrt](https://github.com/byroot/pysrt) developer Jean Boussier and contributors
 * [subliminal](https://github.com/Diaoul/subliminal) developer Antoine Bertin and contributors
+* [`alass`](https://github.com/kaegi/alass) developer Kaegi and contributors

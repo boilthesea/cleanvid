@@ -1007,8 +1007,17 @@ def RunCleanvid():
     parser.add_argument(
         '--offline', help='do not attempt to download subtitles (default: false)', action='store_true'
     )
+    parser.add_argument(
+        '--alass',
+        help='Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)',
+        action='store_true',
+        dest="use_alass"
+    )
 
     args = parser.parse_args()
+    # Add default for alass if not already present (though argparse handles this)
+    if not hasattr(args, 'use_alass'):
+        args.use_alass = False
 
     if args.hardCode:
         args.reEncodeVideo = True
@@ -1020,33 +1029,84 @@ def RunCleanvid():
     if not args.subs:
         args.subs = GetSubtitles(args.input, args.subsLang, args.offline)
 
-    cleaner = VidCleaner(
-        args.input,
-        args.subs,
-        args.output,
-        args.subsOut,
-        args.swears,
-        args.swearsPadSec,
-        args.embedSubs,
-        args.fullSubs,
-        args.subsOnly,
-        args.edl,
-        args.jsonDump,
-        args.subsLang,
-        args.reEncodeVideo,
-        args.reEncodeAudio,
-        args.hardCode,
-        args.vparams,
-        args.audioStreamIdx,
-        args.aparams,
-        args.aDownmix,
-        args.threadsInput,
-        args.threadsEncoding,
-        args.plexAutoSkipJson,
-        args.plexAutoSkipId,
-    )
-    cleaner.CreateCleanSubAndMuteList()
-    cleaner.MultiplexCleanVideo()
+    # --- Optional Alass Synchronization ---
+    alass_temp_srt_file = None # To track temp file for cleanup
+    if args.use_alass:
+        # Use args.input and args.subs directly here
+        if args.subs and os.path.isfile(args.subs):
+            print(f"Attempting subtitle synchronization with alass for: {args.subs}")
+            try:
+                # Create a temporary file for alass output
+                temp_f = tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode='w', encoding='utf-8')
+                alass_temp_srt_file = temp_f.name
+                temp_f.close() # Close handle for Windows compatibility
+                print(f"  Using temporary file for alass output: {alass_temp_srt_file}")
+
+                alass_cmd = f'alass "{args.input}" "{args.subs}" "{alass_temp_srt_file}"'
+                print(f"  Executing: {alass_cmd}")
+                # Use delegator.run consistent with the rest of the script
+                alass_result = delegator.run(alass_cmd, block=True)
+
+                if alass_result.return_code == 0 and os.path.isfile(alass_temp_srt_file) and os.path.getsize(alass_temp_srt_file) > 0:
+                    print(f"  Alass synchronization successful. Using synced subtitles: {alass_temp_srt_file}")
+                    args.subs = alass_temp_srt_file # Update args.subs to point to the synced version
+                else:
+                    print(f"  Warning: Alass synchronization failed (return code: {alass_result.return_code}). Proceeding with original subtitles.", file=sys.stderr)
+                    print(f"  Alass stderr: {alass_result.err}", file=sys.stderr)
+                    # Clean up the potentially empty/failed temp file immediately
+                    if os.path.exists(alass_temp_srt_file):
+                        os.remove(alass_temp_srt_file)
+                    alass_temp_srt_file = None # Reset tracker
+            except Exception as e:
+                print(f"  Warning: An error occurred during alass execution: {e}. Proceeding with original subtitles.", file=sys.stderr)
+                if alass_temp_srt_file and os.path.exists(alass_temp_srt_file): os.remove(alass_temp_srt_file) # Cleanup on exception
+                alass_temp_srt_file = None # Reset tracker
+        else:
+            print("  Warning: --alass flag specified, but no valid subtitle file found to synchronize.", file=sys.stderr)
+
+    # Instantiate the cleaner and run processing within try/finally for cleanup
+    try:
+        cleaner = VidCleaner(
+            args.input,
+            args.subs, # This will be the original or the alass temp file
+            args.output,
+            args.subsOut,
+            args.swears,
+            args.swearsPadSec,
+            args.embedSubs,
+            args.fullSubs,
+            args.subsOnly,
+            args.edl,
+            args.jsonDump,
+            args.subsLang,
+            args.reEncodeVideo,
+            args.reEncodeAudio,
+            args.hardCode,
+            args.vparams,
+            args.audioStreamIdx,
+            args.aparams,
+            args.aDownmix,
+            args.threadsInput,
+            args.threadsEncoding,
+            args.plexAutoSkipJson,
+            args.plexAutoSkipId,
+        )
+        cleaner.CreateCleanSubAndMuteList()
+        cleaner.MultiplexCleanVideo()
+        print("Processing completed successfully using Windows compatibility method.") # Added context
+    except Exception as e:
+         # Add more specific error handling if needed, or re-raise
+         print(f"\n--- Processing Error (Windows Method) ---", file=sys.stderr)
+         print(f"Error details: {e}", file=sys.stderr)
+         # Consider printing traceback for unexpected errors
+         # import traceback
+         # traceback.print_exc(file=sys.stderr)
+         sys.exit(1) # Exit with error code
+    finally:
+        # --- Cleanup Alass Temp File ---
+        if alass_temp_srt_file and os.path.exists(alass_temp_srt_file):
+            print(f"Cleaning up temporary alass file: {alass_temp_srt_file}")
+            os.remove(alass_temp_srt_file)
 
 
 if __name__ == "__main__":
