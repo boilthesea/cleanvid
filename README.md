@@ -44,9 +44,9 @@ python3 -m pip install -U 'git+https://github.com/mmguero/cleanvid'
 * [delegator.py](https://github.com/kennethreitz/delegator.py)
 * [pysrt](https://github.com/byroot/pysrt)
 * [subliminal](https://github.com/Diaoul/subliminal)
-* [`alass`](https://github.com/kaegi/alass)* (Optional, needed for `--alass` synchronization)
+* [alass](https://github.com/kaegi/alass)* (Optional, needed for `--alass` synchronization)
 
-To install FFmpeg, use your operating system's package manager or install binaries from [ffmpeg.org](https://www.ffmpeg.org/download.html). The Python dependencies will be installed automatically if you are using `pip` to install cleanvid. To use the optional subtitle synchronization feature, install [`alass`](https://github.com/kaegi/alass) from its repository and ensure the executable (e.g., `alass.bat` on Windows) is in your system's PATH.
+To install FFmpeg, use your operating system's package manager or install binaries from [ffmpeg.org](https://www.ffmpeg.org/download.html). The Python dependencies will be installed automatically if you are using `pip` to install cleanvid. To use the optional subtitle synchronization feature, install [alass](https://github.com/kaegi/alass) from its repository and ensure the executable (e.g., `alass.bat` on Windows) is in your system's PATH.
 
 ## usage
 
@@ -100,6 +100,8 @@ options:
   --alass               Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)
   --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
 ```
+
+Alternately, you can use the experimental cleanvidgui.py to pass all of the above options through checkboxes and fields. The gui relies on additional libraries customtkinter and tkinterdnd2.
 
 ### Docker
 

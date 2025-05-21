@@ -2,6 +2,7 @@
 *.mp4
 *.mkv
 *.py_streaminfo
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
