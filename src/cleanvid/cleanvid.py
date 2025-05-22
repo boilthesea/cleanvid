@@ -1117,128 +1117,128 @@ def RunCleanvid():
         # e.g.:
             #   1: aac, 44100 Hz, stereo, eng
             #   3: opus, 48000 Hz, stereo, jpn
-        print(
-            '\n'.join(
-                [
-                    f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
-                    for x in audioStreamsInfo.get("streams", [])
-                ]
+            print(
+                '\n'.join(
+                    [
+                        f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
+                        for x in audioStreamsInfo.get("streams", [])
+                    ]
+                )
             )
-        )
-        sys.exit(0) # Exit after listing streams
+            sys.exit(0) # Exit after listing streams
 
-        # Proceed with normal processing setup
-        inFile = args.input
-        outFile = args.output
-        subsFile = args.subs
-        # lang variable now directly uses args.subsLang due to dest change
-        plexFile = args.plexAutoSkipJson
-        if inFile:
-            inFileParts = os.path.splitext(inFile)
-            if not outFile:
-                outFile = inFileParts[0] + "_clean" + inFileParts[1]
-            if not subsFile:
-                subsFile = GetSubtitles(inFile, args.subsLang, args.offline) # Use args.subsLang
-            if args.plexAutoSkipId and not plexFile:
-                plexFile = inFileParts[0] + "_PlexAutoSkip_clean.json"
+    # Proceed with normal processing setup
+    inFile = args.input
+    outFile = args.output
+    subsFile = args.subs
+    # lang variable now directly uses args.subsLang due to dest change
+    plexFile = args.plexAutoSkipJson
+    if inFile:
+        inFileParts = os.path.splitext(inFile)
+        if not outFile:
+            outFile = inFileParts[0] + "_clean" + inFileParts[1]
+        if not subsFile:
+            subsFile = GetSubtitles(inFile, args.subsLang, args.offline) # Use args.subsLang
+        if args.plexAutoSkipId and not plexFile:
+            plexFile = inFileParts[0] + "_PlexAutoSkip_clean.json"
 
-        # --- Optional Alass Synchronization ---
-        alass_temp_srt_file = None # To track temp file for cleanup
-        if args.use_alass:
-            if subsFile and os.path.isfile(subsFile):
-                print(f"Attempting subtitle synchronization with alass for: {subsFile}")
-                try:
-                    # Create a temporary file for alass output
-                    # Use NamedTemporaryFile correctly - create it, get name, close handle
-                    temp_f = tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode='w', encoding='utf-8')
-                    alass_temp_srt_file = temp_f.name
-                    temp_f.close() # Close the handle so alass can write to it (on Windows)
-                    print(f"  Using temporary file for alass output: {alass_temp_srt_file}")
+    # --- Optional Alass Synchronization ---
+    alass_temp_srt_file = None # To track temp file for cleanup
+    if args.use_alass:
+        if subsFile and os.path.isfile(subsFile):
+            print(f"Attempting subtitle synchronization with alass for: {subsFile}")
+            try:
+                # Create a temporary file for alass output
+                # Use NamedTemporaryFile correctly - create it, get name, close handle
+                temp_f = tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode='w', encoding='utf-8')
+                alass_temp_srt_file = temp_f.name
+                temp_f.close() # Close the handle so alass can write to it (on Windows)
+                print(f"  Using temporary file for alass output: {alass_temp_srt_file}")
 
-                    alass_cmd = f'alass "{inFile}" "{subsFile}" "{alass_temp_srt_file}"'
-                    print(f"  Executing: {alass_cmd}")
-                    alass_result = delegator.run(alass_cmd, block=True)
+                alass_cmd = f'alass "{inFile}" "{subsFile}" "{alass_temp_srt_file}"'
+                print(f"  Executing: {alass_cmd}")
+                alass_result = delegator.run(alass_cmd, block=True)
 
-                    if alass_result.return_code == 0 and os.path.isfile(alass_temp_srt_file) and os.path.getsize(alass_temp_srt_file) > 0:
-                        print(f"  Alass synchronization successful. Using synced subtitles: {alass_temp_srt_file}")
-                        subsFile = alass_temp_srt_file # Update subsFile to point to the synced version
-                    else:
-                        print(f"  Warning: Alass synchronization failed (return code: {alass_result.return_code}). Proceeding with original subtitles.", file=sys.stderr)
-                        print(f"  Alass stderr: {alass_result.err}", file=sys.stderr)
-                        # Clean up the potentially empty/failed temp file immediately
-                        if os.path.exists(alass_temp_srt_file):
-                            os.remove(alass_temp_srt_file)
-                        alass_temp_srt_file = None # Reset tracker
-                except Exception as e:
-                    print(f"  Warning: An error occurred during alass execution: {e}. Proceeding with original subtitles.", file=sys.stderr)
-                    if alass_temp_srt_file and os.path.exists(alass_temp_srt_file): os.remove(alass_temp_srt_file) # Cleanup on exception
+                if alass_result.return_code == 0 and os.path.isfile(alass_temp_srt_file) and os.path.getsize(alass_temp_srt_file) > 0:
+                    print(f"  Alass synchronization successful. Using synced subtitles: {alass_temp_srt_file}")
+                    subsFile = alass_temp_srt_file # Update subsFile to point to the synced version
+                else:
+                    print(f"  Warning: Alass synchronization failed (return code: {alass_result.return_code}). Proceeding with original subtitles.", file=sys.stderr)
+                    print(f"  Alass stderr: {alass_result.err}", file=sys.stderr)
+                    # Clean up the potentially empty/failed temp file immediately
+                    if os.path.exists(alass_temp_srt_file):
+                        os.remove(alass_temp_srt_file)
                     alass_temp_srt_file = None # Reset tracker
-            else:
-                print("  Warning: --alass flag specified, but no valid subtitle file found to synchronize.", file=sys.stderr)
+            except Exception as e:
+                print(f"  Warning: An error occurred during alass execution: {e}. Proceeding with original subtitles.", file=sys.stderr)
+                if alass_temp_srt_file and os.path.exists(alass_temp_srt_file): os.remove(alass_temp_srt_file) # Cleanup on exception
+                alass_temp_srt_file = None # Reset tracker
+        else:
+            print("  Warning: --alass flag specified, but no valid subtitle file found to synchronize.", file=sys.stderr)
 
-        if plexFile and not args.plexAutoSkipId:
-            raise ValueError(
-                f'Content ID must be specified if creating a PlexAutoSkip JSON file (https://github.com/mdhiggins/PlexAutoSkip/wiki/Identifiers)'
-            )
+    if plexFile and not args.plexAutoSkipId:
+        raise ValueError(
+            f'Content ID must be specified if creating a PlexAutoSkip JSON file (https://github.com/mdhiggins/PlexAutoSkip/wiki/Identifiers)'
+        )
 
-        # Instantiate the cleaner and run processing within try/finally for cleanup
-        try:
-            cleaner = VidCleaner(
-                 inFile,
-                 subsFile, # This will be the original or the alass temp file
-                 outFile,
-                 args.subsOut,
-                 args.swears,
-                 args.swearsPadSec, # Changed from args.pad
-                 args.embedSubs,
-                 args.fullSubs,
-                 args.subsOnly,
-                 args.edl,
-                 args.jsonDump, # Changed from args.json
-                 args.subsLang, # Changed from lang
-                 args.reEncodeVideo,
-                 args.reEncodeAudio,
-                 args.hardCode,
-                 args.vParams,
-                 args.audioStreamIdx,
-                 args.aParams,
-                 args.aDownmix,
-                 args.threadsInput if args.threadsInput is not None else args.threads,
-                 args.threadsEncoding if args.threadsEncoding is not None else args.threads,
-                 plexFile,
-                 args.plexAutoSkipId,
-                 args.use_win_method, # Pass the flag
-            )
-            cleaner.CreateCleanSubAndMuteList()
-            # --- Wrap the potentially failing call ---
-            cleaner.MultiplexCleanVideo()
-            print("Processing completed successfully using standard method.")
+    # Instantiate the cleaner and run processing within try/finally for cleanup
+    try:
+        cleaner = VidCleaner(
+             inFile,
+             subsFile, # This will be the original or the alass temp file
+             outFile,
+             args.subsOut,
+             args.swears,
+             args.swearsPadSec, # Changed from args.pad
+             args.embedSubs,
+             args.fullSubs,
+             args.subsOnly,
+             args.edl,
+             args.jsonDump, # Changed from args.json
+             args.subsLang, # Changed from lang
+             args.reEncodeVideo,
+             args.reEncodeAudio,
+             args.hardCode,
+             args.vParams,
+             args.audioStreamIdx,
+             args.aParams,
+             args.aDownmix,
+             args.threadsInput if args.threadsInput is not None else args.threads,
+             args.threadsEncoding if args.threadsEncoding is not None else args.threads,
+             plexFile,
+             args.plexAutoSkipId,
+             args.use_win_method, # Pass the flag
+        )
+        cleaner.CreateCleanSubAndMuteList()
+        # --- Wrap the potentially failing call ---
+        cleaner.MultiplexCleanVideo()
+        print("Processing completed successfully.") # Generic success message
 
-        except ValueError as e:
-            print(f"\n--- Processing Error ---", file=sys.stderr)
-            print(f"Error details: {e}", file=sys.stderr)
-            # Check if it's likely the command length error (heuristic)
-            is_windows = sys.platform.startswith('win')
-            # Suggest --win only on Windows and if the error isn't about missing files/streams
-            # (More specific error checking could be added here if needed)
-            if is_windows:
-                 print("\nSuggestion: Processing failed.", file=sys.stderr)
-                 print("If you are on Windows and suspect a command-line length error,", file=sys.stderr)
-                 print("try running the command again with the --win flag added.", file=sys.stderr)
-            sys.exit(1) # Exit with error code after printing suggestion
-        except Exception as e:
-             # Catch other potential errors during original processing
-             print(f"\n--- Unexpected Error ---", file=sys.stderr)
-             print(f"Error details: {e}", file=sys.stderr)
-             # Consider printing traceback for unexpected errors
-             # import traceback
-             # traceback.print_exc(file=sys.stderr)
-             sys.exit(1)
-        finally:
-            # --- Cleanup Alass Temp File ---
-            if alass_temp_srt_file and os.path.exists(alass_temp_srt_file):
-                print(f"Cleaning up temporary alass file: {alass_temp_srt_file}")
-                os.remove(alass_temp_srt_file)
+    except ValueError as e:
+        print(f"\n--- Processing Error ---", file=sys.stderr)
+        print(f"Error details: {e}", file=sys.stderr)
+        # Check if it's likely the command length error (heuristic)
+        is_windows = sys.platform.startswith('win')
+        # Suggest --win only on Windows and if the error isn't about missing files/streams
+        # (More specific error checking could be added here if needed)
+        if is_windows:
+             print("\nSuggestion: Processing failed.", file=sys.stderr)
+             print("If you are on Windows and suspect a command-line length error,", file=sys.stderr)
+             print("try running the command again with the --win flag added.", file=sys.stderr)
+        sys.exit(1) # Exit with error code after printing suggestion
+    except Exception as e:
+         # Catch other potential errors during original processing
+         print(f"\n--- Unexpected Error ---", file=sys.stderr)
+         print(f"Error details: {e}", file=sys.stderr)
+         # Consider printing traceback for unexpected errors
+         # import traceback
+         # traceback.print_exc(file=sys.stderr)
+         sys.exit(1)
+    finally:
+        # --- Cleanup Alass Temp File ---
+        if alass_temp_srt_file and os.path.exists(alass_temp_srt_file):
+            print(f"Cleaning up temporary alass file: {alass_temp_srt_file}")
+            os.remove(alass_temp_srt_file)
 
 
 #################################################################################
