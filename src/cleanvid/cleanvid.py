@@ -1117,15 +1117,15 @@ def RunCleanvid():
         # e.g.:
             #   1: aac, 44100 Hz, stereo, eng
             #   3: opus, 48000 Hz, stereo, jpn
-            print(
-                '\n'.join(
-                    [
-                        f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
-                        for x in audioStreamsInfo.get("streams", [])
-                    ]
-                )
+        print(
+            '\n'.join(
+                [
+                    f"{x['index']}: {x.get('codec_name', 'unknown codec')}, {x.get('sample_rate', 'unknown')} Hz, {x.get('channel_layout', 'unknown channel layout')}, {x.get('tags', {}).get('language', 'unknown language')}"
+                    for x in audioStreamsInfo.get("streams", [])
+                ]
             )
-            sys.exit(0) # Exit after listing streams
+        )
+        sys.exit(0) # Exit after listing streams
 
     # Proceed with normal processing setup
     inFile = args.input
