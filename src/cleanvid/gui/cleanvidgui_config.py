@@ -8,7 +8,7 @@ CONFIG_FILE_NAME = "cleanvid_gui_config.json"
 DEFAULT_CONFIG = {
     "win_mode": sys.platform.startswith("win"), # Default based on OS
     "alass_mode": False,
-    "swears_file": os.path.join(os.path.dirname(__file__), '..', 'swears.txt'), # Default swears file relative to gui dir
+    "swears_file": "", # Default swears file relative to gui dir
     "default_media_dir": "",
     "last_input_dir": str(Path.home()), # Start at home dir initially
     "last_output_dir": str(Path.home()),

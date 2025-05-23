@@ -12,13 +12,14 @@ from gui.cleanvidgui_main_frame import CleanVidMainFrame # Will import this once
 
 APP_NAME = "CleanVid GUI"
 
-class CleanVidGUIApp(TkinterDnD.Tk): # Inherit from TkinterDnD.Tk instead of ctk.CTk
+class CleanVidGUIApp(ctk.CTk): # Inherit from TkinterDnD.Tk instead of ctk.CTk
     """
     Main application class for the CleanVid GUI.
     Sets up the main window and manages the application lifecycle.
     """
     def __init__(self):
         super().__init__()
+        self.tkdnd = TkinterDnD.TkdndWrapper(self)
 
         # --- Configuration Management ---
         self.config_manager = ConfigManager()
@@ -38,7 +39,7 @@ class CleanVidGUIApp(TkinterDnD.Tk): # Inherit from TkinterDnD.Tk instead of ctk
         # Instantiate the main frame, passing necessary objects
         from gui.cleanvidgui_main_frame import CleanVidMainFrame # Import here to avoid circular dependency if needed later
         self.main_frame = CleanVidMainFrame(self, config_manager=self.config_manager, output_queue=self.output_queue)
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
         # Placeholder for now until main_frame is implemented
         # ctk.CTkLabel(self, text="Main GUI content will go here.").pack(pady=20)
 

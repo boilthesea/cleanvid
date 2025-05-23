@@ -51,7 +51,8 @@ class OptionsFrame(ctk.CTkFrame):
         # --- Enable/Disable Variables for Optional Args ---
         # Initialize based on whether the value exists in config (or has a non-empty/non-default value)
         # Defaulting to True if value exists, False otherwise. Adjust logic if needed.
-        self.enable_swears_file_var = ctk.BooleanVar(value=self.config_manager.config.get("enable_swears_file", "swears_file" in self.config_manager.config))
+        swears_file_path = self.config_manager.config.get("swears_file", "")
+        self.enable_swears_file_var = ctk.BooleanVar(value=self.config_manager.config.get("enable_swears_file", bool(swears_file_path)))
         self.enable_subtitle_lang_var = ctk.BooleanVar(value=self.config_manager.config.get("enable_subtitle_lang", "subtitle_lang" in self.config_manager.config))
         self.enable_padding_var = ctk.BooleanVar(value=self.config_manager.config.get("enable_padding", "padding" in self.config_manager.config))
         self.enable_video_params_var = ctk.BooleanVar(value=self.config_manager.config.get("enable_video_params", "video_params" in self.config_manager.config))

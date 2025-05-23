@@ -64,9 +64,9 @@ class CleanVidMainFrame(ctk.CTkFrame):
         self.grid_rowconfigure(2, weight=1) # Action/Output (expands)
 
 
-        self.input_output_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
-        self.advanced_options_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew") # Use the actual OptionsFrame instance
-        self.action_output_frame.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="nsew") # Action/Output expands
+        self.input_output_frame.grid(row=0, column=0, padx=1, pady=(1, 0), sticky="ew")
+        self.advanced_options_frame.grid(row=1, column=0, padx=1, pady=0, sticky="ew") # Use the actual OptionsFrame instance
+        self.action_output_frame.grid(row=2, column=0, padx=1, pady=(0, 1), sticky="nsew") # Action/Output expands
 
 
 # Example Usage (for testing purposes, requires other modules)
