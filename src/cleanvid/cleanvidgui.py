@@ -12,14 +12,14 @@ from gui.cleanvidgui_main_frame import CleanVidMainFrame # Will import this once
 
 APP_NAME = "CleanVid GUI"
 
-class CleanVidGUIApp(ctk.CTk): # Inherit from TkinterDnD.Tk instead of ctk.CTk
+class CleanVidGUIApp(ctk.CTk, TkinterDnD.DnDWrapper): # Inherit from TkinterDnD.Tk instead of ctk.CTk
     """
     Main application class for the CleanVid GUI.
     Sets up the main window and manages the application lifecycle.
     """
     def __init__(self):
         super().__init__()
-        self.tkdnd = TkinterDnD.DnDWrapper(self)
+        self.drop_target_register('DND_FILES')
 
         # --- Configuration Management ---
         self.config_manager = ConfigManager()
