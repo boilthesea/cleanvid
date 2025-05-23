@@ -12,14 +12,13 @@ from gui.cleanvidgui_main_frame import CleanVidMainFrame # Will import this once
 
 APP_NAME = "CleanVid GUI"
 
-class CleanVidGUIApp(ctk.CTk, TkinterDnD.DnDWrapper): # Inherit from TkinterDnD.Tk instead of ctk.CTk
+class CleanVidGUIApp(TkinterDnD.Tk): # Inherit from TkinterDnD.Tk instead of ctk.CTk
     """
     Main application class for the CleanVid GUI.
     Sets up the main window and manages the application lifecycle.
     """
     def __init__(self):
         super().__init__()
-        self.drop_target_register('DND_FILES')
 
         # --- Configuration Management ---
         self.config_manager = ConfigManager()
@@ -30,6 +29,14 @@ class CleanVidGUIApp(ctk.CTk, TkinterDnD.DnDWrapper): # Inherit from TkinterDnD.
         # Set window geometry from config, fallback to default
         self.geometry(self._app_config.get("window_geometry", DEFAULT_CONFIG["window_geometry"])) # Use _app_config
         ctk.set_appearance_mode("System") # Modes: "System" (default), "Dark", "Light"
+        # Set root window background to match customtkinter theme
+        # This helps theme the border area when not using ctk.CTk as root
+        bg_color_tuple = ctk.ThemeManager.theme["CTkFrame"]["fg_color"]
+        current_mode = ctk.get_appearance_mode()
+        if current_mode == "Dark":
+            self.configure(bg=bg_color_tuple[1])
+        else: # Light mode
+            self.configure(bg=bg_color_tuple[0])
         ctk.set_default_color_theme("blue") # Themes: "blue" (default), "green", "dark-blue"
 
         # --- Thread-safe Queue for Subprocess Output ---
@@ -39,7 +46,7 @@ class CleanVidGUIApp(ctk.CTk, TkinterDnD.DnDWrapper): # Inherit from TkinterDnD.
         # Instantiate the main frame, passing necessary objects
         from gui.cleanvidgui_main_frame import CleanVidMainFrame # Import here to avoid circular dependency if needed later
         self.main_frame = CleanVidMainFrame(self, config_manager=self.config_manager, output_queue=self.output_queue)
-        self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
+        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         # Placeholder for now until main_frame is implemented
         # ctk.CTkLabel(self, text="Main GUI content will go here.").pack(pady=20)
 
