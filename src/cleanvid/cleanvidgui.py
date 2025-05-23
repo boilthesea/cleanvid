@@ -29,6 +29,14 @@ class CleanVidGUIApp(TkinterDnD.Tk): # Inherit from TkinterDnD.Tk instead of ctk
         # Set window geometry from config, fallback to default
         self.geometry(self._app_config.get("window_geometry", DEFAULT_CONFIG["window_geometry"])) # Use _app_config
         ctk.set_appearance_mode("System") # Modes: "System" (default), "Dark", "Light"
+        # Set root window background to match customtkinter theme
+        # This helps theme the border area when not using ctk.CTk as root
+        bg_color_tuple = ctk.ThemeManager.theme["CTkFrame"]["fg_color"]
+        current_mode = ctk.get_appearance_mode()
+        if current_mode == "Dark":
+            self.configure(bg=bg_color_tuple[1])
+        else: # Light mode
+            self.configure(bg=bg_color_tuple[0])
         ctk.set_default_color_theme("blue") # Themes: "blue" (default), "green", "dark-blue"
 
         # --- Thread-safe Queue for Subprocess Output ---
