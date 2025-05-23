@@ -19,7 +19,7 @@ class CleanVidGUIApp(ctk.CTk): # Inherit from TkinterDnD.Tk instead of ctk.CTk
     """
     def __init__(self):
         super().__init__()
-        self.tkdnd = TkinterDnD.TkdndWrapper(self)
+        self.tkdnd = TkinterDnD.DnDWrapper(self)
 
         # --- Configuration Management ---
         self.config_manager = ConfigManager()
