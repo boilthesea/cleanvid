@@ -577,9 +577,10 @@ class VidCleaner(object):
                 with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
                     self.chapter_file_path = f.name
                     f.write(";FFMETADATA1\n")
-                    f.write("TIMEBASE=1/1000\n") # Times are in milliseconds
+                    # TIMEBASE is now per-chapter
                     for c in self.chapter_list:
                         f.write("[CHAPTER]\n")
+                        f.write("TIMEBASE=1/1000\n") # Times are in milliseconds
                         f.write(f"START={c['start']}\n")
                         f.write(f"END={c['start']}\n") # Point chapters
                         f.write(f"title={c['title']}\n")
