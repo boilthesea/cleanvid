@@ -14,7 +14,8 @@ DEFAULT_CONFIG = {
     "last_output_dir": str(Path.home()),
     "last_swears_dir": os.path.join(os.path.dirname(__file__), '..'), # Default swears dir relative to gui dir
     "last_subs_dir": str(Path.home()),
-    "window_geometry": "800x750" # Default window size
+    "window_geometry": "800x750", # Default window size
+    "chapter_markers": False,
 }
 
 class ConfigManager:

@@ -268,6 +268,7 @@ class VidCleaner(object):
         plexAutoSkipJson="",
         plexAutoSkipId="",
         use_win_method=False, # Added for Windows compatibility
+        chapter_markers=False,
     ):
         if (iVidFileSpec is not None) and os.path.isfile(iVidFileSpec):
             self.inputVidFileSpec = iVidFileSpec
@@ -315,6 +316,8 @@ class VidCleaner(object):
         if self.aParams.startswith('base64:'):
             self.aParams = base64.b64decode(self.aParams[7:]).decode('utf-8')
         self.use_win_method = use_win_method # Added for Windows compatibility
+        self.chapter_markers = chapter_markers
+        self.chapter_file_path = None
 
     ######## del ##################################################################
     def __del__(self):
@@ -333,6 +336,12 @@ class VidCleaner(object):
                 os.remove(self.assSubsFileSpec)
             except OSError:
                 pass # Ignore error if file is gone
+        if self.chapter_file_path and os.path.isfile(self.chapter_file_path):
+            try:
+                os.remove(self.chapter_file_path)
+                print(f"Cleaned up chapter file: {self.chapter_file_path}")
+            except OSError as e:
+                print(f"Warning: Could not delete chapter file {self.chapter_file_path}: {e}")
 
 
     ######## CreateCleanSubAndMuteList #################################################
@@ -540,8 +549,40 @@ class VidCleaner(object):
                 indent=4,
             )
 
+        if self.chapter_markers:
+            self.chapter_list = []
+            # Iterate through newTimestampPairs (excluding the dummy one at the end)
+            for timePair in newTimestampPairs[:-1]: # Exclude the dummy pair
+                start_time = timePair[0] # datetime.time object
+                # Calculate chapter start time in milliseconds
+                chapter_start_ms = (start_time.hour * 3600 +
+                                    start_time.minute * 60 +
+                                    start_time.second) * 1000 + \
+                                   start_time.microsecond // 1000
+                self.chapter_list.append({
+                    'start': chapter_start_ms,
+                    'title': f"Muted Segment {len(self.chapter_list) + 1}"
+                })
+
     ######## MultiplexCleanVideo ###################################################
     def MultiplexCleanVideo(self):
+        if self.chapter_markers and hasattr(self, 'chapter_list') and self.chapter_list:
+            try:
+                # Create a temporary file for chapters
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+                    self.chapter_file_path = f.name
+                    f.write(";FFMETADATA1\n")
+                    f.write("TIMEBASE=1/1000\n") # Times are in milliseconds
+                    for c in self.chapter_list:
+                        f.write("[CHAPTER]\n")
+                        f.write(f"START={c['start']}\n")
+                        f.write(f"END={c['start']}\n") # Point chapters
+                        f.write(f"title={c['title']}\n")
+                print(f"Chapter file created: {self.chapter_file_path}")
+            except Exception as e:
+                print(f"Error creating chapter file: {e}")
+                self.chapter_file_path = None # Ensure it's None if creation failed
+
         if not self.use_win_method:
             # Original single-step ffmpeg logic
             # if we're don't *have* to generate a new video file, don't
@@ -632,29 +673,53 @@ class VidCleaner(object):
                     # Map the selected audio stream directly if no filter
                     mapAudioOutput = f'0:a:{audioStreamOnlyIndex}'
 
+                # Build input list and map arguments
+                inputs = [f'-i "{self.inputVidFileSpec}"']
+                maps = [f'-map 0:v', f'-map "{mapAudioOutput}"']
+                if audioUnchangedMapList:
+                    maps.append(audioUnchangedMapList)
+
+                input_idx_counter = 1 # Video is 0
+                metadata_map_idx = None
+                subs_map_idx = None
+
+                if self.chapter_file_path:
+                    inputs.append(f'-i "{self.chapter_file_path}"')
+                    metadata_map_idx = input_idx_counter
+                    input_idx_counter += 1
+
                 if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
+                    inputs.append(f'-i "{self.cleanSubsFileSpec}"')
+                    subs_map_idx = input_idx_counter
+                    # input_idx_counter += 1 # Not strictly necessary if it's the last input
+
+                ffmpeg_inputs_str = " ".join(inputs)
+                ffmpeg_maps_str = " ".join(maps)
+
+                ffmpeg_metadata_map_str = ""
+                if metadata_map_idx is not None:
+                    ffmpeg_metadata_map_str = f" -map_metadata {metadata_map_idx}"
+
+                ffmpeg_subs_embed_str = " -sn " # Default to no subtitles
+                if subs_map_idx is not None:
                     outFileParts = os.path.splitext(self.outputVidFileSpec)
-                    subsArgsInput = f" -i \"{self.cleanSubsFileSpec}\" "
-                    subsArgsEmbed = f" -map 1:s -c:s {'mov_text' if outFileParts[1] == '.mp4' else 'srt'} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang} "
-                else:
-                    subsArgsInput = ""
-                    subsArgsEmbed = " -sn "
+                    subs_codec = 'mov_text' if outFileParts[1] == '.mp4' else 'srt'
+                    ffmpeg_subs_embed_str = f" -map {subs_map_idx}:s -c:s {subs_codec} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang} "
 
                 ffmpegCmd = (
-                    f"ffmpeg -hide_banner -nostats -loglevel error -y {'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} -i \""
-                    + self.inputVidFileSpec
-                    + "\""
-                    + subsArgsInput
-                    + audioFilter
-                    + f' -map 0:v -map "{mapAudioOutput}" {audioUnchangedMapList} ' # Use mapAudioOutput
-                    + subsArgsEmbed
-                    + videoArgs
-                    + f" {self.aParams} {'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} \""
-                    + self.outputVidFileSpec
-                    + "\""
+                    f"ffmpeg -hide_banner -nostats -loglevel error -y {'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
+                    f"{ffmpeg_inputs_str} "
+                    f"{audioFilter} " # audioFilter already contains necessary spaces
+                    f"{ffmpeg_maps_str} "
+                    f"{ffmpeg_subs_embed_str} "
+                    f"{videoArgs} " # videoArgs might include hardcoded subs, which is fine
+                    f"{self.aParams} "
+                    f"{ffmpeg_metadata_map_str} " # map_metadata should come before output file
+                    f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                    f"\"{self.outputVidFileSpec}\""
                 )
                 # Use run_ffmpeg_command helper
-                run_ffmpeg_command(ffmpegCmd, f'Could not process {self.inputVidFileSpec}')
+                run_ffmpeg_command(ffmpegCmd.strip(), f'Could not process {self.inputVidFileSpec}')
                 if not os.path.isfile(self.outputVidFileSpec):
                      raise ValueError(f'Output file {self.outputVidFileSpec} was not created by ffmpeg (standard path).')
             else:
@@ -779,9 +844,23 @@ class VidCleaner(object):
                     )
                     run_ffmpeg_command(ffmpeg_filter_audio_cmd, "Failed to filter audio stream (Windows path)")
 
-                    mux_inputs = f"-i \"{self.inputVidFileSpec}\" -i \"{temp_filtered_audio_filepath}\""
-                    subs_input_index_win = 2 
-                    mux_maps = f"-map 0:v -map 1:a"
+                    mux_inputs_list = [f"-i \"{self.inputVidFileSpec}\"", f"-i \"{temp_filtered_audio_filepath}\""]
+                    mux_input_idx_counter_win = 2 # Video is 0, Filtered Audio is 1
+
+                    chapter_metadata_map_idx_win = None
+                    if self.chapter_file_path:
+                        mux_inputs_list.append(f'-i "{self.chapter_file_path}"')
+                        chapter_metadata_map_idx_win = mux_input_idx_counter_win
+                        mux_input_idx_counter_win +=1
+
+                    subs_input_index_win = mux_input_idx_counter_win # Next available index for subs
+
+                    mux_inputs = " ".join(mux_inputs_list)
+                    mux_maps = f"-map 0:v -map 1:a" # Video from input 0, Processed audio from input 1
+
+                    if chapter_metadata_map_idx_win is not None:
+                        mux_maps += f" -map_metadata {chapter_metadata_map_idx_win}"
+
                     audioUnchangedMapList_win = ' '.join(
                         f'-map 0:a:{i}'
                         for i, stream in enumerate(self.actual_audio_streams)
@@ -789,17 +868,18 @@ class VidCleaner(object):
                     ).strip()
                     if audioUnchangedMapList_win:
                         mux_maps += f" {audioUnchangedMapList_win}"
-                    mux_maps += " -map 0:d? -map 0:t?"
-                    mux_codecs = "-c:v copy -c:a copy -c:d copy -c:t copy"
+                    mux_maps += " -map 0:d? -map 0:t?" # Map data and attachment streams from original video
+                    mux_codecs = "-c:v copy -c:a copy -c:d copy -c:t copy" # Default codecs
 
                     if self.embedSubs and os.path.isfile(self.cleanSubsFileSpec):
-                        mux_inputs += f" -i \"{self.cleanSubsFileSpec}\""
-                        mux_maps += f" -map {subs_input_index_win}:s"
+                        # Subtitles are added as a new input, so their input index needs to be dynamic
+                        mux_inputs += f" -i \"{self.cleanSubsFileSpec}\"" # Append to existing mux_inputs string
+                        mux_maps += f" -map {subs_input_index_win}:s" # Map the subtitle stream using its dynamic index
                         outFileParts_win = os.path.splitext(self.outputVidFileSpec)
                         subs_codec_win = 'mov_text' if outFileParts_win[1] == '.mp4' else 'srt'
                         mux_codecs += f" -c:s {subs_codec_win} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang}"
                     else:
-                        mux_codecs += " -sn"
+                        mux_codecs += " -sn" # No subtitles
                     
                     if self.hardCode:
                         if not os.path.isfile(self.cleanSubsFileSpec):
@@ -1088,6 +1168,13 @@ def RunCleanvid():
         action='store_true',
         dest="use_win_method" # Use a distinct destination variable
     )
+    parser.add_argument(
+        '--chapter',
+        help='Create chapter markers for muted segments',
+        action='store_true',
+        default=False,
+        dest="chapter_markers"
+    )
     parser.set_defaults(
         audioStreamIdxList=False,
         edl=False,
@@ -1100,6 +1187,7 @@ def RunCleanvid():
         subsOnly=False,
         use_alass=False, # Default alass to False
         use_win_method=False, # Default to False
+        chapter_markers=False, # Default chapter_markers to False
     )
     args = parser.parse_args()
 
@@ -1208,6 +1296,7 @@ def RunCleanvid():
              plexFile,
              args.plexAutoSkipId,
              args.use_win_method, # Pass the flag
+             args.chapter_markers, # Pass chapter_markers
         )
         cleaner.CreateCleanSubAndMuteList()
         # --- Wrap the potentially failing call ---
