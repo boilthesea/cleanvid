@@ -387,6 +387,8 @@ class VidCleaner(object):
         subs = pysrt.open(self.tmpSubsFileSpec)
         newSubs = pysrt.SubRipFile()
         newTimestampPairs = []
+        if self.chapter_markers:
+            self.chapter_list = []
 
         # append a dummy sub at the very end so that pairwise can peek and see nothing
         subs.append(
@@ -455,6 +457,24 @@ class VidCleaner(object):
                 else:
                     prevNaughtySub = None
                     newTimes = [sub.start.to_time(), sub.end.to_time()]
+
+                # Add to chapter_list if chapter_markers is enabled
+                if self.chapter_markers:
+                    chapter_start_ordinal = 0
+                    if subScrubbed: # Current sub itself contains profanity
+                        chapter_start_ordinal = sub.start.ordinal - self.swearsPadMillisec
+                    else: # Included due to padding from previous or next
+                        chapter_start_ordinal = sub.start.ordinal
+
+                    # Ensure no duplicate chapter markers for the exact same start time
+                    # This can happen if adjacent subtitles are both naughty and padding overlaps.
+                    # We only want one chapter marker at the beginning of a continuous muted segment.
+                    if not self.chapter_list or self.chapter_list[-1]['start'] != chapter_start_ordinal:
+                        self.chapter_list.append({
+                            'start': chapter_start_ordinal,
+                            'title': f"Muted Segment {len(self.chapter_list) + 1}"
+                        })
+
                 newTimestampPairs.append(newTimes)
             else:
                 if self.fullSubs:
@@ -548,21 +568,6 @@ class VidCleaner(object):
                 open(self.plexAutoSkipJson, 'w'),
                 indent=4,
             )
-
-        if self.chapter_markers:
-            self.chapter_list = []
-            # Iterate through newTimestampPairs (excluding the dummy one at the end)
-            for timePair in newTimestampPairs[:-1]: # Exclude the dummy pair
-                start_time = timePair[0] # datetime.time object
-                # Calculate chapter start time in milliseconds
-                chapter_start_ms = (start_time.hour * 3600 +
-                                    start_time.minute * 60 +
-                                    start_time.second) * 1000 + \
-                                   start_time.microsecond // 1000
-                self.chapter_list.append({
-                    'start': chapter_start_ms,
-                    'title': f"Muted Segment {len(self.chapter_list) + 1}"
-                })
 
     ######## MultiplexCleanVideo ###################################################
     def MultiplexCleanVideo(self):
