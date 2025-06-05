@@ -139,6 +139,7 @@ class ActionOutputFrame(ctk.CTkFrame):
         audio_stream_index = self.options_frame.audio_stream_index_var.get()
         threads = self.options_frame.threads_var.get()
         chapter_markers = self.options_frame.chapter_markers_var.get() # Get chapter markers state
+        fast_index = self.options_frame.fast_index_var.get() # Add this
 
 
         # --- Input Validation ---
@@ -246,6 +247,9 @@ class ActionOutputFrame(ctk.CTkFrame):
 
         if chapter_markers:
             cmd.append("--chapter")
+
+        if fast_index: # Add this block
+            cmd.append("--fast-index")
 
         # --- Execute in Thread ---
         self.output_console.configure(state="normal")

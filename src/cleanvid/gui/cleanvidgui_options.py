@@ -48,6 +48,7 @@ class OptionsFrame(ctk.CTkFrame):
         self.audio_stream_index_var = ctk.StringVar(value=self.config_manager.config.get("audio_stream_index", DEFAULT_CONFIG.get("audio_stream_index", ""))) # Use string for optional input
         self.threads_var = ctk.StringVar(value=self.config_manager.config.get("threads", DEFAULT_CONFIG.get("threads", ""))) # Use string for optional input
         self.chapter_markers_var = ctk.BooleanVar(value=self.config_manager.config.get("chapter_markers", DEFAULT_CONFIG.get("chapter_markers", False)))
+        self.fast_index_var = ctk.BooleanVar(value=self.config_manager.config.get("fast_index", DEFAULT_CONFIG.get("fast_index", False)))
 
 
         # --- Enable/Disable Variables for Optional Args ---
@@ -88,7 +89,7 @@ class OptionsFrame(ctk.CTkFrame):
         self.tab_view.add("Swears/Pad")
         self.tab_view.add("Output Formats")
         self.tab_view.add("Encoding/Audio")
-        self.tab_view.add("Chapters") # New Tab
+        self.tab_view.add("Misc") # Renamed Tab
 
         # --- Populate Tabs ---
         self._create_settings_tab(self.tab_view.tab("Settings"))
@@ -96,7 +97,7 @@ class OptionsFrame(ctk.CTkFrame):
         self._create_swears_pad_tab(self.tab_view.tab("Swears/Pad"))
         self._create_formats_tab(self.tab_view.tab("Output Formats"))
         self._create_encoding_audio_tab(self.tab_view.tab("Encoding/Audio"))
-        self._create_chapters_tab(self.tab_view.tab("Chapters")) # Create the new tab
+        self._create_misc_tab(self.tab_view.tab("Misc")) # Updated method call
 
 
     def _create_settings_tab(self, tab):
@@ -317,17 +318,27 @@ class OptionsFrame(ctk.CTkFrame):
         threads_enable_cb.configure(command=lambda: self._toggle_widget_state(self.enable_threads_var, threads_entry))
         self._toggle_widget_state(self.enable_threads_var, threads_entry)
 
-    def _create_chapters_tab(self, tab):
-        """Creates the content for the Chapters tab."""
-        tab.grid_columnconfigure(0, weight=1) # Allow checkbox to expand
+    def _create_misc_tab(self, tab):
+        """Creates the content for the Misc tab (formerly Chapters)."""
+        tab.grid_columnconfigure(0, weight=1) # Allow checkboxes to expand
 
+        # Existing Chapter Markers Checkbox
         self.chapter_markers_checkbox = ctk.CTkCheckBox(
-            tab, # Checkboxes frame is not used here, directly in tab
+            tab,
             text="Add Chapter Markers at Mute Points (--chapter)",
             variable=self.chapter_markers_var
         )
-        self.chapter_markers_checkbox.grid(row=0, column=0, padx=10, pady=(10, 10), sticky="w")
+        self.chapter_markers_checkbox.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w") # Adjust pady
         Tooltip(self.chapter_markers_checkbox, "(From README) Create chapter markers for muted segments in the video metadata.")
+
+        # New Fast Index Checkbox
+        self.fast_index_checkbox = ctk.CTkCheckBox(
+            tab,
+            text="Optimize for Streaming (--fast-index, MP4 only)",
+            variable=self.fast_index_var
+        )
+        self.fast_index_checkbox.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="w") # Placed on a new row
+        Tooltip(self.fast_index_checkbox, "Moves metadata to the front of MP4 files for faster loading and seeking on some devices.")
 
 
     def _toggle_widget_state(self, enable_var, widgets):
@@ -370,6 +381,7 @@ class OptionsFrame(ctk.CTkFrame):
             "audio_stream_index": self.audio_stream_index_var.get(),
             "threads": self.threads_var.get(),
             "chapter_markers": self.chapter_markers_var.get(),
+            "fast_index": self.fast_index_var.get(), # Add this
             # Add enable states
             "enable_swears_file": self.enable_swears_file_var.get(),
             "enable_subtitle_lang": self.enable_subtitle_lang_var.get(),

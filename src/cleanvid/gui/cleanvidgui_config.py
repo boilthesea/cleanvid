@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     "last_subs_dir": str(Path.home()),
     "window_geometry": "800x750", # Default window size
     "chapter_markers": False,
+    "fast_index": False, # Add this
 }
 
 class ConfigManager:

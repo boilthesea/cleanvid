@@ -268,6 +268,7 @@ class VidCleaner(object):
         plexAutoSkipJson="",
         plexAutoSkipId="",
         use_win_method=False, # Added for Windows compatibility
+        fast_index=False, # Add this here
         chapter_markers=False,
     ):
         if (iVidFileSpec is not None) and os.path.isfile(iVidFileSpec):
@@ -315,7 +316,8 @@ class VidCleaner(object):
             self.vParams = base64.b64decode(self.vParams[7:]).decode('utf-8')
         if self.aParams.startswith('base64:'):
             self.aParams = base64.b64decode(self.aParams[7:]).decode('utf-8')
-        self.use_win_method = use_win_method # Added for Windows compatibility
+        self.use_win_method = use_win_method
+        self.fast_index = fast_index # Store it
         self.chapter_markers = chapter_markers
         self.chapter_file_path = None
 
@@ -712,6 +714,10 @@ class VidCleaner(object):
                     subs_codec = 'mov_text' if outFileParts[1] == '.mp4' else 'srt'
                     ffmpeg_subs_embed_str = f" -map {subs_map_idx}:s -c:s {subs_codec} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang} "
 
+                ffmpeg_movflags = ""
+                if self.fast_index and self.outputVidFileSpec.lower().endswith(".mp4"):
+                    ffmpeg_movflags = "-movflags +faststart "
+
                 ffmpegCmd = (
                     f"ffmpeg -hide_banner -nostats -loglevel error -y {'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
                     f"{ffmpeg_inputs_str} "
@@ -722,6 +728,7 @@ class VidCleaner(object):
                     f"{self.aParams} "
                     f"{ffmpeg_metadata_map_str} " # map_metadata should come before output file
                     f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                    f"{ffmpeg_movflags}"
                     f"\"{self.outputVidFileSpec}\""
                 )
                 # Use run_ffmpeg_command helper
@@ -917,11 +924,16 @@ class VidCleaner(object):
                     elif self.reEncodeVideo:
                         mux_codecs = re.sub(r'-c:v\s+copy', self.vParams, mux_codecs)
 
+                    ffmpeg_movflags_win = ""
+                    if self.fast_index and self.outputVidFileSpec.lower().endswith(".mp4"):
+                        ffmpeg_movflags_win = "-movflags +faststart "
+
                     ffmpeg_mux_cmd = (
                         f"ffmpeg -hide_banner -nostats -loglevel error -y "
                         f"{mux_inputs} "
                         f"{mux_maps} {mux_codecs} "
                         f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                        f"{ffmpeg_movflags_win}"
                         f"\"{self.outputVidFileSpec}\""
                     )
                     run_ffmpeg_command(ffmpeg_mux_cmd, "Failed to mux final video (Windows path)")
@@ -981,6 +993,10 @@ class VidCleaner(object):
                         subs_codec_win_nf = 'mov_text' if outFileParts_win_nf[1] == '.mp4' else 'srt'
                         subsArgsEmbed_win = f"-c:s {subs_codec_win_nf} -disposition:s:0 default -metadata:s:s:0 language={self.subsLang}"
 
+                    ffmpeg_movflags_win_nf = ""
+                    if self.fast_index and self.outputVidFileSpec.lower().endswith(".mp4"):
+                        ffmpeg_movflags_win_nf = "-movflags +faststart "
+
                     ffmpeg_cmd_single_win = (
                         f"ffmpeg -hide_banner -nostats -loglevel error -y "
                         f"{'' if self.threadsInput is None else ('-threads '+ str(int(self.threadsInput)))} "
@@ -988,6 +1004,7 @@ class VidCleaner(object):
                         f"{mapArgs_win} "
                         f"{videoArgs_win} {audioArgs_win} {subsArgsEmbed_win} "
                         f"{'' if self.threadsEncoding is None else ('-threads '+ str(int(self.threadsEncoding)))} "
+                        f"{ffmpeg_movflags_win_nf}"
                         f"\"{self.outputVidFileSpec}\""
                     )
                     run_ffmpeg_command(ffmpeg_cmd_single_win, "Failed to process video (Windows path, no audio filter)")
@@ -1181,6 +1198,13 @@ def RunCleanvid():
         default=False,
         dest="chapter_markers"
     )
+    parser.add_argument(
+        '--fast-index',
+        help='Place mov atom at the beginning of the file for faster seeking (MP4 only).',
+        action='store_true',
+        # default=False, # Default is handled by set_defaults
+        dest="fast_index"
+    )
     parser.set_defaults(
         audioStreamIdxList=False,
         edl=False,
@@ -1194,6 +1218,7 @@ def RunCleanvid():
         use_alass=False, # Default alass to False
         use_win_method=False, # Default to False
         chapter_markers=False, # Default chapter_markers to False
+        fast_index=False, # Add this
     )
     args = parser.parse_args()
 
@@ -1302,6 +1327,7 @@ def RunCleanvid():
              plexFile,
              args.plexAutoSkipId,
              args.use_win_method, # Pass the flag
+             args.fast_index, # Add this here
              args.chapter_markers, # Pass chapter_markers
         )
         cleaner.CreateCleanSubAndMuteList()
