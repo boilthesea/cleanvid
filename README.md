@@ -77,6 +77,7 @@ options:
                         pad (seconds) around profanity
   -e, --embed-subs      embed subtitles in resulting video file
   -f, --full-subs       include all subtitles in output subtitle file (not just scrubbed)
+  --fast-index          can improve navigation on some smart tvs by moving the fast seeking index to the start of an mp4
   --subs-only           only operate on subtitles (do not alter audio)
   --offline             don't attempt to download subtitles
   --edl                 generate MPlayer EDL file with mute actions (also implies --subs-only)
