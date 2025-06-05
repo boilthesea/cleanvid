@@ -97,6 +97,7 @@ options:
   --threads-encoding <int>
                         ffmpeg encoding options -threads value
   --threads <int>       ffmpeg -threads value (for both global options and encoding)
+  --chapter             When specified, ffmpeg will add chapter markers to the output video at the beginning of each segment that is muted. This can be useful for quickly navigating to and verifying the muted sections. This option is off by default. The CleanVid GUI also provides a checkbox to enable this feature.
   --alass               Attempt to synchronize subtitles with video using alass before cleaning (requires alass in PATH)
   --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
 ```

@@ -138,6 +138,7 @@ class ActionOutputFrame(ctk.CTkFrame):
         audio_params = self.options_frame.audio_params_var.get()
         audio_stream_index = self.options_frame.audio_stream_index_var.get()
         threads = self.options_frame.threads_var.get()
+        chapter_markers = self.options_frame.chapter_markers_var.get() # Get chapter markers state
 
 
         # --- Input Validation ---
@@ -242,6 +243,9 @@ class ActionOutputFrame(ctk.CTkFrame):
             except ValueError:
                  messagebox.showwarning("Warning", f"Invalid Threads value '{threads}'. Ignoring.")
                  self.log_output(f"Warning: Invalid Threads value '{threads}'. Ignoring.\n")
+
+        if chapter_markers:
+            cmd.append("--chapter")
 
         # --- Execute in Thread ---
         self.output_console.configure(state="normal")
