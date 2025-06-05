@@ -17,8 +17,8 @@ class CleanVidMainFrame(ctk.CTkFrame):
         self.output_queue = output_queue
 
         # Configure grid layout for the main frame
-        self.grid_columnconfigure(0, weight=1) # Main content column
-        self.grid_columnconfigure(1, weight=0) # QueueFrame column
+        self.grid_columnconfigure(0, weight=2) # Main content column (input, options, action/output)
+        self.grid_columnconfigure(1, weight=1) # QueueFrame column
         # Row configurations for column 0:
         self.grid_rowconfigure(0, weight=0) # Input/Output frame
         self.grid_rowconfigure(1, weight=0) # Options frame
@@ -77,7 +77,7 @@ class CleanVidMainFrame(ctk.CTkFrame):
         self.action_output_frame.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="nsew") # Action/Output expands
 
         # Queue Frame
-        self.queue_frame = QueueFrame(self, config_manager=self.config_manager, options_frame=self.advanced_options_frame)
+        self.queue_frame = QueueFrame(self, config_manager=self.config_manager, options_frame=self.advanced_options_frame, width=400) # Added width
         self.queue_frame.grid(row=0, column=1, rowspan=3, padx=(0,10), pady=(10,10), sticky="nsew")
 
         # Pass references for inter-frame communication (continued)
