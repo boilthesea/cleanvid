@@ -17,12 +17,14 @@ class CleanVidMainFrame(ctk.CTkFrame):
         self.output_queue = output_queue
 
         # Configure grid layout for the main frame
-        self.grid_columnconfigure(0, weight=1)
-        # Rows for Input/Output, Options, and Action/Output frames
-        self.grid_rowconfigure(0, weight=0) # Input/Output frame (doesn't expand vertically)
-        self.grid_rowconfigure(1, weight=0) # Core Options frame (doesn't expand vertically)
-        self.grid_rowconfigure(2, weight=0) # Advanced Options (Tabs) frame (doesn't expand vertically)
-        self.grid_rowconfigure(3, weight=1) # Action/Output frame (expands vertically)
+        self.grid_columnconfigure(0, weight=1) # Main content column
+        self.grid_columnconfigure(1, weight=0) # QueueFrame column
+        # Row configurations for column 0:
+        self.grid_rowconfigure(0, weight=0) # Input/Output frame
+        self.grid_rowconfigure(1, weight=0) # Options frame
+        # self.grid_rowconfigure(2, weight=0) # This was for Advanced Options (Tabs) frame, now action_output_frame is on row 2
+        self.grid_rowconfigure(2, weight=1) # Action/Output frame (expands vertically in column 0)
+        # self.grid_rowconfigure(3, weight=1) # This row is no longer explicitly needed as action_output_frame is on row 2
 
 
         # --- Instantiate Sub-Frames ---
@@ -30,6 +32,7 @@ class CleanVidMainFrame(ctk.CTkFrame):
         from .cleanvidgui_input_output import InputOutputFrame
         from .cleanvidgui_options import OptionsFrame
         from .cleanvidgui_action_output import ActionOutputFrame
+        from .cleanvidgui_queue_frame import QueueFrame
 
         # Create the frames
         # Create OptionsFrame first so it can be passed to InputOutputFrame
@@ -55,18 +58,31 @@ class CleanVidMainFrame(ctk.CTkFrame):
         # Place core options directly in main frame for now, or create a dedicated frame if needed - Removed placeholder logic
 
         # Revised grid layout:
-        # Row 0: Input/Output Frame
-        # Row 1: Options Frame (containing core and advanced tabs)
-        # Row 2: Action/Output Frame
+        # Row 0: Input/Output Frame | Queue Frame
+        # Row 1: Options Frame      | Queue Frame
+        # Row 2: Action/Output Frame| Queue Frame
 
+        # The following explicit re-configuration of rows 0,1,2 is fine.
+        # It correctly sets weights for the frames in column 0.
+        # input_output_frame (row 0, col 0) should not expand vertically.
+        # advanced_options_frame (row 1, col 0) should not expand vertically.
+        # action_output_frame (row 2, col 0) should expand vertically.
         self.grid_rowconfigure(0, weight=0) # Input/Output
         self.grid_rowconfigure(1, weight=0) # Options (Tabs)
-        self.grid_rowconfigure(2, weight=1) # Action/Output (expands)
+        self.grid_rowconfigure(2, weight=1) # Action/Output (expands in col 0)
 
 
         self.input_output_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
         self.advanced_options_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew") # Use the actual OptionsFrame instance
         self.action_output_frame.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="nsew") # Action/Output expands
+
+        # Queue Frame
+        self.queue_frame = QueueFrame(self, config_manager=self.config_manager, options_frame=self.advanced_options_frame)
+        self.queue_frame.grid(row=0, column=1, rowspan=3, padx=(0,10), pady=(10,10), sticky="nsew")
+
+        # Pass references for inter-frame communication (continued)
+        self.action_output_frame.queue_frame = self.queue_frame
+        self.queue_frame.action_output_frame = self.action_output_frame
 
 
 # Example Usage (for testing purposes, requires other modules)

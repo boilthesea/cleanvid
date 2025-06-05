@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "window_geometry": "800x750", # Default window size
     "chapter_markers": False,
     "fast_index": False, # Add this
+    "pending_queue": [], # For persisting the queue items
 }
 
 class ConfigManager:

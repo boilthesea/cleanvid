@@ -105,6 +105,30 @@ options:
 
 Alternately, you can use the experimental cleanvidgui.py to pass all of the above options through checkboxes and fields. The gui relies on additional libraries customtkinter and tkinterdnd2.
 
+### GUI Queue Feature
+
+The Cleanvid GUI includes a powerful queue system to process multiple video files efficiently:
+
+*   **Queue Panel**: A dedicated panel on the right side of the GUI displays the video processing queue.
+*   **Adding Files**:
+    *   Click the `+` button at the top of the queue panel to open a file dialog and select one or more video files.
+    *   (Future: Drag-and-drop functionality may be supported).
+*   **Settings per Batch**: When you add a batch of files, the settings currently selected in the "Options" tabs (e.g., swears file, output formats, encoding parameters) are locked in specifically for those files. If you change the settings and then add another batch of files, the new settings will apply only to that new batch.
+*   **Managing the Queue**:
+    *   **Remove File**: Click the trash can icon (🗑️) next to any file in the queue to remove it.
+    *   **Clear Queue**: Click the `x` button at the top of the queue panel to remove all files from the queue.
+    *   **View Settings**: Hover your mouse over a file in the queue to see a tooltip displaying the specific settings that are locked in for that file.
+*   **Processing the Queue**:
+    *   Click the "Run Queue" button (this button may also say "Clean Video" if the queue is empty but a single job is defined by the main input fields) to start processing all files in the queue sequentially.
+    *   The GUI will process one file at a time, using its associated settings. Output and errors for each file will be displayed in the console area.
+*   **Pausing and Resuming**:
+    *   While the queue is processing, a "Pause" button will become available. Clicking it will pause the queue after the currently processing file is completed.
+    *   The button will then change to "Resume", allowing you to continue processing the queue from where it left off.
+*   **Queue Persistence**: If you close the Cleanvid GUI while there are files remaining in the queue (either waiting or if processing was paused), the queue will be automatically saved. When you next start the GUI, these pending items will be reloaded into the queue.
+*   **Help**: Click the `?` button at the top of the queue panel for a summary of these instructions within the application.
+
+This queue system allows for flexible batch processing with different settings applied to different sets of videos.
+
 ### Docker
 
 Alternately, a [Dockerfile](./docker/Dockerfile) is provided to allow you to run cleanvid in Docker. You can build the `oci.guero.org/cleanvid:latest` Docker image with [`build_docker.sh`](./docker/build_docker.sh), then run [`cleanvid-docker.sh`](./docker/cleanvid-docker.sh) inside the directory where your video/subtitle files are located.
