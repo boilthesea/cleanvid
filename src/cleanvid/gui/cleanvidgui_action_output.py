@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
@@ -205,9 +207,22 @@ class ActionOutputFrame(ctk.CTkFrame):
                 self.is_processing_queue = True # Treat as a queue of one
                 self.update_clean_button_state()
 
+                output_info = self.input_output_frame.get_state()
+                input_video_path = output_info.get("input_video")
+                save_to_same_dir = output_info.get("save_to_same_dir", True) # Default to True for safety
+                output_dir = output_info.get("output_dir")
+                output_filename = output_info.get("output_filename")
+
                 suggested_output_path = ""
-                if self.input_output_frame: # Get output path suggestion for single job
-                    suggested_output_path = self.input_output_frame.get_suggested_output_path()
+                if input_video_path:
+                    input_path_obj = Path(input_video_path)
+                    if save_to_same_dir:
+                        suggested_output_path = str(input_path_obj.parent / f"{input_path_obj.stem}_clean{input_path_obj.suffix}")
+                    elif output_dir and output_filename:
+                        suggested_output_path = str(Path(output_dir) / output_filename)
+                    elif output_dir: # Fallback if filename is empty but dir is set
+                         suggested_output_path = str(Path(output_dir) / f"{input_path_obj.stem}_clean{input_path_obj.suffix}")
+
 
                 self._execute_cleanvid_task(
                     single_item['file_path'],
