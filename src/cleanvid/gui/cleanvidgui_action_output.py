@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
@@ -25,32 +27,40 @@ class ActionOutputFrame(ctk.CTkFrame):
     def __init__(self, master, config_manager, output_queue):
         super().__init__(master)
         self.config_manager = config_manager
-        self.output_queue = output_queue # Queue for thread-safe output logging
+        self.output_queue = output_queue
 
         # References to other frames (set by the main frame after instantiation)
-        self.input_output_frame = None # type: InputOutputFrame
-        self.options_frame = None # type: OptionsFrame
+        self.input_output_frame = None
+        self.options_frame = None
+        self.queue_frame = None # Will be set by MainFrame
+
+        self.is_processing_queue = False
+        self.is_paused = False # For pause/resume state
+        self.pause_requested = False # To signal a desire to pause
+        self.process = None
+        self.stop_thread = threading.Event()
 
         # Configure grid layout
-        self.grid_columnconfigure(0, weight=1) # Allow output console to expand horizontally
-        self.grid_rowconfigure(1, weight=1) # Allow output console to expand vertically
-
-        # --- Process Management ---
-        self.process = None # To hold the subprocess object
-        self.stop_thread = threading.Event() # Event to signal reader threads to stop
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         # --- UI Elements ---
-        # Buttons Frame (to hold Clean and Copy buttons)
         buttons_frame = ctk.CTkFrame(self, fg_color="transparent")
         buttons_frame.grid(row=0, column=0, padx=5, pady=(5, 0), sticky="ew")
-        buttons_frame.grid_columnconfigure(0, weight=1) # Push clean button left
+        buttons_frame.grid_columnconfigure(0, weight=0) # Clean button
+        buttons_frame.grid_columnconfigure(1, weight=0) # Pause button
+        buttons_frame.grid_columnconfigure(2, weight=1) # Pushes copy button to the right
 
-        self.clean_button = ctk.CTkButton(buttons_frame, text="Clean Video", command=self.start_clean_process, height=35, text_color="white", fg_color="green", hover_color="darkgreen")
-        self.clean_button.grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        Tooltip(self.clean_button, "Start the video cleaning process based on the selected options.")
+        self.clean_button = ctk.CTkButton(buttons_frame, text="Clean Video", command=self.initiate_processing, height=35)
+        self.clean_button.grid(row=0, column=0, padx=(5,2), pady=5, sticky="w")
+        Tooltip(self.clean_button, "Start the video cleaning process or process the current queue.")
 
-        self.copy_button = ctk.CTkButton(buttons_frame, text="Copy Output", command=self.copy_output)
-        self.copy_button.grid(row=0, column=1, padx=5, pady=5, sticky="e")
+        self.pause_button = ctk.CTkButton(buttons_frame, text="Pause", command=self.toggle_pause_resume, state="disabled", height=35)
+        self.pause_button.grid(row=0, column=1, padx=2, pady=5, sticky="w")
+        Tooltip(self.pause_button, "Pause or resume queue processing after the current file.")
+
+        self.copy_button = ctk.CTkButton(buttons_frame, text="Copy Output", command=self.copy_output, height=35)
+        self.copy_button.grid(row=0, column=2, padx=(5,5), pady=5, sticky="e")
         Tooltip(self.copy_button, "Copy the entire content of the output console below to the clipboard.")
 
         # Output Console
@@ -60,12 +70,17 @@ class ActionOutputFrame(ctk.CTkFrame):
 
         # Start periodic check for output queue
         self.after(100, self.process_output_queue)
+        self.update_pause_button_state() # Initial state for pause button
+        # self.update_clean_button_state() will be called by MainFrame or when queue_frame is set
 
 
-    def log_output(self, message):
+    def log_output(self, message, main_log=True): # Added main_log for future flexibility
         """Appends a message to the output console in a thread-safe manner."""
-        # Put the message in the queue to be processed by the main thread
-        self.output_queue.put(message)
+        if main_log:
+            self.output_queue.put(message)
+        else: # For item-specific status, could go to a different log or be handled differently
+            print(message)
+
 
     def process_output_queue(self):
         """Checks the queue for messages from subprocess threads and appends them to the console."""
@@ -101,235 +116,375 @@ class ActionOutputFrame(ctk.CTkFrame):
             self.log_output(f"--- Error reading {stream_name}: {e} ---\n")
 
 
-    def start_clean_process(self):
-        """Validates inputs, constructs the command, and starts the cleanvid process."""
-        # Ensure references to other frames are set
-        if not self.input_output_frame or not self.options_frame:
-             messagebox.showerror("Internal Error", "GUI components not fully initialized.")
-             self.log_output("Internal Error: GUI components not fully initialized.\n")
-             return
-
-        # --- Get values from other frames ---
-        input_video = self.input_output_frame.input_video_var.get()
-        input_subs = self.input_output_frame.input_subs_var.get()
-        save_to_same_dir = self.input_output_frame.save_to_same_dir_var.get()
-        output_dir = self.input_output_frame.output_dir_var.get()
-        output_filename = self.input_output_frame.output_filename_var.get()
-
-        win_mode = self.options_frame.win_mode_var.get()
-        alass_mode = self.options_frame.alass_mode_var.get()
-        swears_file = self.options_frame.swears_file_var.get()
-        subtitle_lang = self.options_frame.subtitle_lang_var.get()
-        padding = self.options_frame.padding_var.get()
-        embed_subs = self.options_frame.embed_subs_var.get()
-        full_subs = self.options_frame.full_subs_var.get()
-        subs_only = self.options_frame.subs_only_var.get()
-        offline = self.options_frame.offline_var.get()
-        edl = self.options_frame.edl_var.get()
-        json_dump = self.options_frame.json_var.get()
-        plex_json = self.options_frame.plex_json_var.get()
-        plex_id = self.options_frame.plex_id_var.get()
-        subs_output = self.options_frame.subs_output_var.get()
-        re_encode_video = self.options_frame.re_encode_video_var.get()
-        re_encode_audio = self.options_frame.re_encode_audio_var.get()
-        burn_subs = self.options_frame.burn_subs_var.get()
-        downmix = self.options_frame.downmix_var.get()
-        video_params = self.options_frame.video_params_var.get()
-        audio_params = self.options_frame.audio_params_var.get()
-        audio_stream_index = self.options_frame.audio_stream_index_var.get()
-        threads = self.options_frame.threads_var.get()
-        chapter_markers = self.options_frame.chapter_markers_var.get() # Get chapter markers state
-        fast_index = self.options_frame.fast_index_var.get() # Add this
-
-
-        # --- Input Validation ---
-        if not input_video or not os.path.isfile(input_video):
-            messagebox.showerror("Error", "Please select a valid input video file.")
-            self.log_output("Error: No valid input video file selected.\n")
+    def update_clean_button_state(self):
+        """Updates the text and state of the main action button based on queue and processing state."""
+        # Placeholder - will be implemented fully later
+        if not self.queue_frame:
+            self.clean_button.configure(text="Clean Video", state="normal", fg_color="green", hover_color="darkgreen")
+            # self.update_pause_button_state() # Pause button should also be updated
             return
 
-        if not swears_file or not os.path.isfile(swears_file):
-             # Try default location one more time if field is empty/invalid
-             default_swears = os.path.join(os.path.dirname(__file__), '..', 'swears.txt')
-             if os.path.isfile(default_swears):
-                 self.options_frame.swears_file_var.set(default_swears) # Update the UI
-                 swears_file = default_swears
-                 self.log_output(f"Using default swears file: {swears_file}\n")
-             else:
-                 messagebox.showerror("Error", f"Please select a valid swears file.\nDefault not found at: {default_swears}")
-                 self.log_output(f"Error: No valid swears file selected or default not found at {default_swears}.\n")
-                 return
+        if self.is_processing_queue and not self.is_paused:
+            self.clean_button.configure(text="Processing Queue...", state="disabled", fg_color="gray50", hover_color="gray40")
+        elif self.is_paused:
+            self.clean_button.configure(text="Queue Paused", state="disabled", fg_color="gray50", hover_color="gray40")
+        elif self.queue_frame.get_item_count() > 0:
+            self.clean_button.configure(text="Run Queue", state="normal", fg_color="blue", hover_color="darkblue")
+        else: # Not processing, not paused, queue is empty
+            self.clean_button.configure(text="Clean Video", state="normal", fg_color="green", hover_color="darkgreen")
 
-        # Validate output path if not saving to same directory
-        output_path = "" # To store the final output path for logging/checking
-        if not save_to_same_dir:
-            if not output_dir or not os.path.isdir(output_dir):
-                messagebox.showerror("Error", "Please select a valid output directory.")
-                self.log_output("Error: No valid output directory selected for custom path.\n")
-                return
-            if not output_filename:
-                messagebox.showerror("Error", "Please enter a valid output filename.")
-                self.log_output("Error: No output filename entered for custom path.\n")
-                return
-            output_path = os.path.join(output_dir, output_filename)
+        self.update_pause_button_state() # Ensure pause button is also updated
+
+
+    def initiate_processing(self):
+        """Initiates processing for the queue or a single item if the queue is empty."""
+        self.log_output("Initiating processing...\n")
+        if self.is_processing_queue and not self.is_paused: # If processing and not paused, don't restart
+            self.log_output("Queue processing is already active.\n")
+            return
+
+        if self.is_paused: # If paused, this action means to effectively stop/reset and start fresh
+            self.log_output("Queue was paused. Resetting and starting fresh...\n")
+            self.is_paused = False
+            self.pause_requested = False
+            # self.is_processing_queue will be set to true below or handled by single job logic
+
+        if self.queue_frame and self.queue_frame.get_item_count() > 0:
+            self.is_processing_queue = True
+            self.is_paused = False
+            self.pause_requested = False
+            self.update_clean_button_state() # This will also call update_pause_button_state
+            self.log_output("--- Starting queue processing... ---\n")
+            self.process_next_queue_item()
         else:
-             # If saving to same dir, construct the expected output path for checking later
-             in_path = Path(input_video)
-             output_path = os.path.join(in_path.parent, f"{in_path.stem}_clean{in_path.suffix}")
+            # No items in queue, try to run as a single job if input_output_frame has a file
+            if self.input_output_frame and self.input_output_frame.input_video_var.get():
+                self.log_output("Queue is empty. Processing as a single job from Input/Output panel.\n")
+
+                input_video = self.input_output_frame.input_video_var.get()
+                if not input_video or not os.path.isfile(input_video):
+                    messagebox.showerror("Error", "Please select a valid input video file for single processing.")
+                    self.log_output("Error: No valid input video selected for single processing.\n")
+                    self.update_clean_button_state() # Ensure button resets
+                    return
+
+                if not self.options_frame:
+                    messagebox.showerror("Internal Error", "Options Frame not available for single processing.")
+                    self.log_output("Error: Options Frame not available for single processing.\n")
+                    self.update_clean_button_state()
+                    return
+
+                current_settings = self.options_frame.get_state()
+
+                # Validate swears file for single run (similar to old start_clean_process)
+                # This validation should ideally be part of get_state or a dedicated validation method in OptionsFrame
+                swears_file_path = current_settings.get('swears_file', '')
+                if current_settings.get('enable_swears_file', False) and (not swears_file_path or not os.path.isfile(swears_file_path)):
+                    # Path to the gui directory, then up to src, then to cleanvid/swears.txt
+                    # This assumes a certain directory structure.
+                    # A better way would be to use a path relative to the main script or a config setting.
+                    # For now, constructing path relative to this file's parent's parent.
+                    # __file__ -> action_output.py -> gui -> src -> cleanvid -> swears.txt
+                    # This is fragile. Consider making swears_file path resolution more robust.
+                    project_root = Path(__file__).parent.parent.parent
+                    default_swears = project_root / 'cleanvid' / 'swears.txt'
+                    if os.path.isfile(default_swears):
+                        # self.options_frame.swears_file_var.set(str(default_swears)) # Update UI if OptionsFrame allows
+                        current_settings['swears_file'] = str(default_swears)
+                        self.log_output(f"Using default swears file for single job: {default_swears}\n")
+                    else:
+                        messagebox.showerror("Error", f"Swears file not found for single job.\nDefault not found: {default_swears}")
+                        self.log_output(f"Error: Swears file not found for single job or default not found.\n")
+                        self.update_clean_button_state()
+                        return
+
+                single_item = {
+                    "id": "single_job_0",
+                    "file_path": input_video,
+                    "settings": current_settings
+                }
+
+                self.is_processing_queue = True # Treat as a queue of one
+                self.update_clean_button_state()
+
+                output_info = self.input_output_frame.get_state()
+                input_video_path = output_info.get("input_video")
+                save_to_same_dir = output_info.get("save_to_same_dir", True) # Default to True for safety
+                output_dir = output_info.get("output_dir")
+                output_filename = output_info.get("output_filename")
+
+                suggested_output_path = ""
+                if input_video_path:
+                    input_path_obj = Path(input_video_path)
+                    if save_to_same_dir:
+                        suggested_output_path = str(input_path_obj.parent / f"{input_path_obj.stem}_clean{input_path_obj.suffix}")
+                    elif output_dir and output_filename:
+                        suggested_output_path = str(Path(output_dir) / output_filename)
+                    elif output_dir: # Fallback if filename is empty but dir is set
+                         suggested_output_path = str(Path(output_dir) / f"{input_path_obj.stem}_clean{input_path_obj.suffix}")
 
 
-        # --- Construct Command ---
-        script_dir = Path(__file__).parent.parent # Go up from gui to cleanvid dir
+                self._execute_cleanvid_task(
+                    single_item['file_path'],
+                    suggested_output_path,
+                    single_item['settings'],
+                    single_item['id'],
+                    is_single_job=True
+                )
+            else:
+                self.log_output("Queue is empty. Add files to the queue or select an input file to start processing.\n")
+                messagebox.showinfo("Queue Empty", "The queue is empty. Please add files to the queue or select an input file in the Input/Output panel.")
+                self.update_clean_button_state()
+
+
+    def process_next_queue_item(self):
+        """Processes the next item from the queue, handling pause requests."""
+        if self.pause_requested:
+            self.is_paused = True
+            self.pause_requested = False # Reset request as it's now handled
+            self.log_output("--- Queue processing paused. ---\n")
+            self.update_clean_button_state() # Updates both buttons via its call to update_pause_button_state
+            return
+
+        if not self.is_processing_queue: # If processing was stopped (e.g. by finishing queue while pause was requested)
+            self.log_output("Processing was stopped or finished.\n")
+            self.on_queue_finished() # Ensure clean state
+            return
+
+        if not self.queue_frame:
+            self.log_output("Error: Queue Frame not available.\n")
+            self.on_queue_finished()
+            return
+
+        item_to_process = self.queue_frame.get_next_item_for_processing()
+
+        if item_to_process is None: # Queue is now empty
+            self.on_queue_finished()
+            return
+
+        file_path = item_to_process['file_path']
+        settings_dict = item_to_process['settings']
+        item_id = item_to_process['id']
+
+        self.log_output(f"--- Starting processing for: {os.path.basename(file_path)} (ID: {item_id}) ---\n")
+        if self.queue_frame:
+            self.queue_frame.update_item_status(item_id, "Processing...")
+
+        input_p = Path(file_path)
+        # Default output path suggestion (cleanvid.py handles actual output path based on its logic and -o)
+        output_path_suggestion = str(input_p.parent / f"{input_p.stem}_clean{input_p.suffix}")
+
+        # If 'output_dir' and 'output_filename' are in settings_dict, they will be used by _execute_cleanvid_task to form the -o argument.
+        # The output_path_suggestion here is mainly for post-process checks or if -o isn't used.
+        if 'output_dir' in settings_dict and 'output_filename' in settings_dict:
+            output_path_suggestion = os.path.join(settings_dict['output_dir'], settings_dict['output_filename'])
+
+
+        self._execute_cleanvid_task(file_path, output_path_suggestion, settings_dict, item_id, is_single_job=False)
+
+
+    def _execute_cleanvid_task(self, input_video_path, output_path_suggestion, settings_dict, item_id, is_single_job=False):
+        """Constructs and executes the cleanvid command for a given item."""
+        # Determine script path relative to this file
+        # __file__ (action_output.py) -> parent (gui) -> parent (src) -> cleanvid -> cleanvid.py
+        script_dir = Path(__file__).parent.parent.parent / "cleanvid"
         python_exe = sys.executable # Use the same python interpreter
-
-        # Always use cleanvid.py; pass --win argument if needed
         script_to_run = script_dir / "cleanvid.py"
 
         if not script_to_run.exists():
              messagebox.showerror("Error", f"Core script not found: {script_to_run}")
              self.log_output(f"Error: Required script not found at {script_to_run}.\n")
+             if not is_single_job:
+                 self.after(0, self.process_next_queue_item)
+             else:
+                 self.on_queue_finished()
              return
 
         cmd = [python_exe, str(script_to_run)]
+        cmd.extend(["-i", input_video_path])
 
-        # Add arguments based on UI selections
-        cmd.extend(["-i", input_video])
-        if input_subs and os.path.isfile(input_subs):
-            cmd.extend(["-s", input_subs])
-        elif input_subs and not os.path.isfile(input_subs):
-             messagebox.showwarning("Warning", f"Specified subtitle file not found:\n{input_subs}\nCleanvid will attempt auto-download/extraction.")
-             self.log_output(f"Warning: Specified subtitle file not found: {input_subs}. Cleanvid will attempt auto-download/extraction.\n")
+        # Apply settings from settings_dict
+        if settings_dict.get('input_subs') and os.path.isfile(settings_dict['input_subs']):
+            cmd.extend(["-s", settings_dict['input_subs']])
 
-        if not save_to_same_dir:
-            cmd.extend(["-o", output_path])
+        final_output_path_for_checking = output_path_suggestion
+        # Logic for -o argument:
+        # If 'save_to_same_dir' is explicitly False in settings_dict (meaning custom path is intended)
+        # AND 'output_dir' and 'output_filename' are provided in settings_dict.
+        if settings_dict.get('save_to_same_dir') is False:
+            custom_output_dir = settings_dict.get('output_dir')
+            custom_output_filename = settings_dict.get('output_filename')
+            if custom_output_dir and custom_output_filename and os.path.isdir(custom_output_dir):
+                specific_output_for_o_arg = os.path.join(custom_output_dir, custom_output_filename)
+                cmd.extend(["-o", specific_output_for_o_arg])
+                final_output_path_for_checking = specific_output_for_o_arg # This is what we'll check for
+            elif not is_single_job : # If part of queue and custom path invalid, log warning
+                self.log_output(f"Warning: Item {item_id} intended custom output path, but dir/filename invalid. Defaulting.\n")
 
-        if win_mode: cmd.append("--win") # Add --win argument if checked
-        if alass_mode: cmd.append("--alass")
-        # Check enable flags before adding optional arguments
-        if self.options_frame.enable_swears_file_var.get() and swears_file:
-             cmd.extend(["-w", swears_file])
-        if self.options_frame.enable_subtitle_lang_var.get() and subtitle_lang:
-             cmd.extend(["-l", subtitle_lang])
-        # Padding needs special check for > 0 even if enabled
-        if self.options_frame.enable_padding_var.get() and padding > 0:
-             cmd.extend(["-p", str(padding)])
-        if embed_subs: cmd.append("--embed-subs")
-        if full_subs: cmd.append("-f")
-        if subs_only: cmd.append("--subs-only")
-        if offline: cmd.append("--offline")
-        if edl: cmd.append("--edl")
-        if json_dump: cmd.append("--json")
-        if subs_output: cmd.extend(["--subs-output", subs_output])
-        if plex_json: cmd.extend(["--plex-auto-skip-json", plex_json])
-        if plex_id: cmd.extend(["--plex-auto-skip-id", plex_id])
-        if re_encode_video: cmd.append("--re-encode-video")
-        if re_encode_audio: cmd.append("--re-encode-audio")
-        if burn_subs: cmd.append("-b")
-        if downmix: cmd.append("-d")
-        if self.options_frame.enable_video_params_var.get() and video_params:
-             cmd.extend(["-v", video_params])
-        if self.options_frame.enable_audio_params_var.get() and audio_params:
-             cmd.extend(["-a", audio_params])
-        if self.options_frame.enable_audio_stream_index_var.get() and audio_stream_index:
-            try:
-                int(audio_stream_index) # Validate it's an integer
-                cmd.extend(["--audio-stream-index", audio_stream_index])
-            except ValueError:
-                 messagebox.showwarning("Warning", f"Invalid Audio Stream Index '{audio_stream_index}'. Ignoring.")
-                 self.log_output(f"Warning: Invalid Audio Stream Index '{audio_stream_index}'. Ignoring.\n")
-        if self.options_frame.enable_threads_var.get() and threads:
-            try:
-                int(threads) # Validate it's an integer
-                cmd.extend(["--threads", threads])
-            except ValueError:
-                 messagebox.showwarning("Warning", f"Invalid Threads value '{threads}'. Ignoring.")
-                 self.log_output(f"Warning: Invalid Threads value '{threads}'. Ignoring.\n")
 
-        if chapter_markers:
-            cmd.append("--chapter")
+        # Boolean flags and optional args from settings_dict
+        if settings_dict.get('win_mode'): cmd.append("--win")
+        if settings_dict.get('alass_mode'): cmd.append("--alass")
+        if settings_dict.get('enable_swears_file', False) and settings_dict.get('swears_file') and os.path.isfile(settings_dict.get('swears_file')):
+             cmd.extend(["-w", settings_dict['swears_file']])
+        if settings_dict.get('enable_subtitle_lang', False) and settings_dict.get('subtitle_lang'):
+             cmd.extend(["-l", settings_dict['subtitle_lang']])
+        padding_val = settings_dict.get('padding', 0.0)
+        if settings_dict.get('enable_padding', False) and isinstance(padding_val, (int, float)) and padding_val > 0:
+             cmd.extend(["-p", str(padding_val)])
+        if settings_dict.get('embed_subs'): cmd.append("--embed-subs")
+        if settings_dict.get('full_subs'): cmd.append("-f") # Ensure this is the correct flag (often --full-subs)
+        if settings_dict.get('subs_only'): cmd.append("--subs-only")
+        if settings_dict.get('offline'): cmd.append("--offline")
+        if settings_dict.get('edl'): cmd.append("--edl")
+        if settings_dict.get('json'): cmd.append("--json") # Assuming --json, not --json-dump
+        if settings_dict.get('subs_output'): cmd.extend(["--subs-output", settings_dict['subs_output']])
+        if settings_dict.get('plex_auto_skip_json'): cmd.extend(["--plex-auto-skip-json", settings_dict['plex_auto_skip_json']])
+        if settings_dict.get('plex_id'): cmd.extend(["--plex-auto-skip-id", settings_dict['plex_id']])
+        if settings_dict.get('re_encode_video'): cmd.append("--re-encode-video")
+        if settings_dict.get('re_encode_audio'): cmd.append("--re-encode-audio")
+        if settings_dict.get('burn_subs'): cmd.append("-b") # Ensure this is the correct flag (often --burn-subs)
+        if settings_dict.get('downmix'): cmd.append("-d") # Ensure this is the correct flag (often --downmix-audio)
+        if settings_dict.get('enable_video_params', False) and settings_dict.get('video_params'):
+             cmd.extend(["-v", settings_dict['video_params']])
+        if settings_dict.get('enable_audio_params', False) and settings_dict.get('audio_params'):
+             cmd.extend(["-a", settings_dict['audio_params']])
+        audio_idx = settings_dict.get('audio_stream_index')
+        if settings_dict.get('enable_audio_stream_index', False) and audio_idx is not None and str(audio_idx).strip() != "":
+            cmd.extend(["--audio-stream-index", str(audio_idx)])
+        threads_val = settings_dict.get('threads')
+        if settings_dict.get('enable_threads', False) and threads_val is not None and str(threads_val).strip() != "":
+            cmd.extend(["--threads", str(threads_val)])
+        if settings_dict.get('chapter_markers'): cmd.append("--chapter")
+        if settings_dict.get('fast_index'): cmd.append("--fast-index")
 
-        if fast_index: # Add this block
-            cmd.append("--fast-index")
-
-        # --- Execute in Thread ---
         self.output_console.configure(state="normal")
-        self.output_console.delete("1.0", tk.END) # Clear previous output
-        # Use shlex.join for displaying the command safely
+        # Clear console only if it's a new queue item or single job, not for subsequent messages of the same item
+        if not hasattr(self, '_last_processed_item_id') or self._last_processed_item_id != item_id:
+            self.output_console.delete("1.0", tk.END)
+        self._last_processed_item_id = item_id # Store last item ID
+
         cmd_display = shlex.join(cmd)
-        self.log_output(f"Executing: {cmd_display}\n------\n")
+        self.log_output(f"Executing for Item ID {item_id}: {cmd_display}\n------\n")
         self.output_console.configure(state="disabled")
 
-        self.clean_button.configure(state="disabled", text="Cleaning...")
-        self.stop_thread.clear() # Clear the stop event for a new run
-
-        # Start the subprocess in a new thread
-        thread = threading.Thread(target=self.run_cleanvid_thread, args=(cmd, output_path), daemon=True)
+        self.stop_thread.clear()
+        # Pass settings_dict to run_cleanvid_thread for output checking logic
+        thread = threading.Thread(target=self.run_cleanvid_thread, args=(cmd, final_output_path_for_checking, item_id, is_single_job, settings_dict), daemon=True)
         thread.start()
 
-    def run_cleanvid_thread(self, cmd, expected_output_path):
-        """Runs the cleanvid command in a subprocess and handles output."""
-        start_time = time.monotonic() # Use time.monotonic() for duration
-        try:
-            # Use Popen for non-blocking execution and stream reading
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True, # Decode stdout/stderr as text
-                encoding='utf-8', # Be explicit about encoding
-                errors='replace', # Handle potential decoding errors gracefully
-                bufsize=1, # Line buffered output
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0 # Hide console window on Windows
-            )
 
-            # Start threads to read stdout and stderr
+    def on_queue_finished(self):
+        """Called when the queue processing is complete."""
+        if hasattr(self, '_last_processed_item_id'):
+            del self._last_processed_item_id
+        self.is_processing_queue = False
+        self.is_paused = False
+        self.pause_requested = False
+        self.update_clean_button_state() # This will also call update_pause_button_state
+        self.log_output("--- Queue processing finished. ---\n")
+
+
+    def toggle_pause_resume(self):
+        """Toggles the pause/resume state of the queue processing."""
+        if self.is_paused: # Currently paused, so resume
+            self.is_paused = False
+            self.pause_requested = False
+            self.log_output("--- Resuming queue processing... ---\n")
+            self.update_clean_button_state() # Update button states
+            # Important: process_next_queue_item will handle the is_processing_queue check
+            # and ensure it doesn't run if the queue became empty while paused.
+            if self.is_processing_queue: # Only try to process if the queue was active
+                 self.process_next_queue_item()
+            else: # If queue finished while paused (e.g. last item processed before pause took effect)
+                 self.on_queue_finished() # Ensure everything is reset correctly
+
+        elif self.is_processing_queue: # Actively processing, so request pause
+            self.pause_requested = True
+            self.log_output("--- Pause requested. Will pause after the current file finishes. ---\n")
+            # No need to change is_paused here, process_next_queue_item will handle it.
+            # self.pause_button.configure(text="Pausing...", state="disabled") # Immediate feedback that request is acknowledged
+            self.update_pause_button_state() # Update button to "Pausing..."
+        else:
+            # Not processing, so pause button shouldn't be active to begin with, but handle defensively
+            self.log_output("Not processing, nothing to pause/resume.\n")
+            self.is_paused = False
+            self.pause_requested = False
+            self.update_pause_button_state()
+
+
+    def update_pause_button_state(self):
+        """Manages the state and text of the pause_button."""
+        if not self.is_processing_queue:
+            self.pause_button.configure(text="Pause", state="disabled")
+        else: # Queue is processing
+            if self.is_paused:
+                self.pause_button.configure(text="Resume", state="normal")
+            elif self.pause_requested:
+                self.pause_button.configure(text="Pausing...", state="disabled")
+            else: # Actively processing, not paused or requesting pause
+                self.pause_button.configure(text="Pause", state="normal")
+
+
+    def run_cleanvid_thread(self, cmd, expected_output_path, item_id, is_single_job=False, settings_dict=None):
+        """Runs the cleanvid command in a subprocess and handles output."""
+        if settings_dict is None:
+            settings_dict = {} # Ensure settings_dict is a dict
+
+        start_time = time.monotonic()
+        return_code = -1 # Default to error
+        try:
+            self.process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace', bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
             stdout_thread = threading.Thread(target=self.read_subprocess_output, args=(self.process.stdout, "stdout"), daemon=True)
             stderr_thread = threading.Thread(target=self.read_subprocess_output, args=(self.process.stderr, "stderr"), daemon=True)
-
             stdout_thread.start()
             stderr_thread.start()
-
-            # Wait for the reader threads to finish (which happens when the subprocess closes the pipes)
             stdout_thread.join()
             stderr_thread.join()
-
-            # Wait for the subprocess to finish and get its return code
             return_code = self.process.wait()
-
-            end_time = time.monotonic() # Use time.monotonic()
-            duration = end_time - start_time # Calculate duration
-
-            result_message = f"------\nProcess finished with exit code: {return_code} (Duration: {duration:.2f}s)\n"
-
-            # Check for expected output file if not in subs_only or edl mode
-            if return_code == 0 and not (self.options_frame.subs_only_var.get() or self.options_frame.edl_var.get() or self.options_frame.json_var.get() or self.options_frame.plex_json_var.get()):
-                 if expected_output_path and os.path.exists(expected_output_path):
-                      result_message += f"Output file created: {expected_output_path}\n"
-                 else:
-                      result_message += f"Warning: Process finished successfully, but expected output file not found:\n{expected_output_path}\n"
-            elif return_code == 0:
-                 result_message += f"Processing likely completed successfully (subtitle/EDL/JSON output).\n" # Assume success for these modes
-
-            self.log_output(result_message) # Log the final result message
-
         except FileNotFoundError:
-            self.log_output(f"--- Error: Command not found. Is '{cmd[0]}' in your PATH? ---\n")
-            messagebox.showerror("Execution Error", f"Command not found. Is '{cmd[0]}' in your PATH?")
+            self.log_output(f"--- Error: Command not found for item {item_id}. Is '{cmd[0]}' in your PATH? ---\n")
         except Exception as e:
-            self.log_output(f"--- Error running command: {e} ---\n")
-            messagebox.showerror("Execution Error", f"An error occurred during execution:\n{e}")
+            self.log_output(f"--- Error running command for item {item_id}: {e} ---\n")
         finally:
-            self.process = None # Clear the process reference
-            self.stop_thread.clear() # Ensure stop event is clear for the next run
-            # Re-enable button on the main thread using after()
-            self.after(0, self.on_process_finished)
+            duration = time.monotonic() - start_time
+            result_message = f"------\nItem {item_id} finished with exit code: {return_code} (Duration: {duration:.2f}s)\n"
 
-    def on_process_finished(self):
-        """Callback executed on the main thread after the subprocess finishes."""
-        self.clean_button.configure(state="normal", text="Clean Video")
+            # Use the passed settings_dict for checking output conditions
+            if return_code == 0 and not (settings_dict.get('subs_only') or settings_dict.get('edl') or settings_dict.get('json') or settings_dict.get('plex_json')):
+                 if expected_output_path and os.path.exists(expected_output_path):
+                      result_message += f"Output file for item {item_id} created: {expected_output_path}\n"
+                 else:
+                      result_message += f"Warning: Item {item_id} finished successfully, but expected output file not found:\n{expected_output_path}\n"
+            elif return_code == 0:
+                 result_message += f"Item {item_id} processing likely completed successfully (subtitle/EDL/JSON output).\n"
+
+            self.log_output(result_message)
+
+            self.process = None
+            self.stop_thread.clear()
+
+            if self.queue_frame: # Optional status update
+                 status = "Completed" if return_code == 0 else "Failed"
+                 self.queue_frame.update_item_status(item_id, status)
+
+            if is_single_job:
+                self.after(0, self.on_queue_finished)
+            else:
+                self.after(0, self.process_next_queue_item) # Key change: process next item
+
+    # on_process_finished is effectively replaced by on_queue_finished or the loop in process_next_queue_item
+    # def on_process_finished(self):
+    #     """Callback executed on the main thread after the subprocess finishes."""
+    #     self.update_clean_button_state() # Use new method
 
     def list_audio_streams_and_output(self, input_video_path):
         """Runs cleanvid with --audio-stream-list and outputs to the console."""
+        # This method should also use update_clean_button_state before/after if it disables the main button
         if not input_video_path or not os.path.isfile(input_video_path):
             messagebox.showerror("Error", "Please select a valid input video file first to list streams.")
             self.log_output("Error: No valid input video file selected to list streams.\n")
@@ -353,53 +508,52 @@ class ActionOutputFrame(ctk.CTkFrame):
         self.log_output(f"Executing: {cmd_display}\n------\n")
         self.output_console.configure(state="disabled")
 
-        self.clean_button.configure(state="disabled") # Disable main button during list
-        self.stop_thread.clear() # Clear the stop event
+        if self.is_processing_queue: # Prevent if main queue is running
+            messagebox.showwarning("Busy", "Cannot list streams while main queue is processing.")
+            return
 
-        # Run this in a thread to keep the GUI responsive
+        # Store original button state to restore it after list streams is done
+        self.original_clean_button_text = self.clean_button.cget("text")
+        self.original_clean_button_state = self.clean_button.cget("state")
+        self.original_clean_button_fg_color = self.clean_button.cget("fg_color")
+        self.original_clean_button_hover_color = self.clean_button.cget("hover_color")
+
+        self.clean_button.configure(state="disabled", text="Listing Streams...", fg_color="gray50", hover_color="gray40")
+        self.stop_thread.clear()
+
         thread = threading.Thread(target=self.run_list_streams_thread, args=(cmd,), daemon=True)
         thread.start()
 
     def run_list_streams_thread(self, cmd):
          """Runs the list streams command and puts output in queue."""
-         start_time = time.monotonic() # Use time.monotonic()
+         start_time = time.monotonic()
          try:
+            # ... (subprocess execution as before) ...
             list_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding='utf-8', errors='replace', bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
-
             stdout_thread = threading.Thread(target=self.read_subprocess_output, args=(list_proc.stdout, "stdout"), daemon=True)
             stderr_thread = threading.Thread(target=self.read_subprocess_output, args=(list_proc.stderr, "stderr"), daemon=True)
-            stdout_thread.start()
-            stderr_thread.start()
-
-            stdout_thread.join()
-            stderr_thread.join()
-
-            list_proc.wait()
-            return_code = list_proc.returncode
-
-            end_time = time.monotonic() # Use time.monotonic()
-            duration = end_time - start_time
-
-            self.log_output(f"------\nList streams finished (exit code: {return_code}, Duration: {duration:.2f}s)\n")
-
+            stdout_thread.start(); stderr_thread.start() # Start threads
+            stdout_thread.join(); stderr_thread.join() # Wait for threads
+            list_proc.wait() # Wait for process
+            self.log_output(f"------\nList streams finished (exit code: {list_proc.returncode}, Duration: {time.monotonic() - start_time:.2f}s)\n")
          except FileNotFoundError:
             self.log_output(f"--- Error: Command not found. Is '{cmd[0]}' in your PATH? ---\n")
-            messagebox.showerror("Execution Error", f"Command not found. Is '{cmd[0]}' in your PATH?")
          except Exception as e:
             self.log_output(f"--- Error listing streams: {e} ---\n")
-            messagebox.showerror("Execution Error", f"An error occurred while listing streams:\n{e}")
          finally:
-            # Re-enable button on the main thread
-            self.after(0, self.on_process_finished)
+            # Restore button state using main thread, more robustly with update_clean_button_state
+            self.after(0, lambda: self.clean_button.configure(
+                text=self.original_clean_button_text,
+                state=self.original_clean_button_state,
+                fg_color=self.original_clean_button_fg_color,
+                hover_color=self.original_clean_button_hover_color
+            ))
+            # Or even better, if button states are managed well:
+            # self.after(0, self.update_clean_button_state)
 
 
     def copy_output(self):
@@ -429,25 +583,25 @@ class ActionOutputFrame(ctk.CTkFrame):
 
     def on_closing(self):
         """Method to be called by the main app when the window is closing."""
-        # Check if a process is running before allowing close
-        if self.process and self.process.poll() is None: # poll() returns None if process is still running
-             if messagebox.askyesno("Exit Confirmation", "A cleaning process is still running.\nExiting now may leave incomplete files.\n\nAre you sure you want to exit?"):
-                 self.log_output("Attempting to terminate running process...\n")
-                 self.stop_thread.set() # Signal reader threads to stop
-                 if self.process:
+        # Check if a process is running before allowing close (covers queue processing too)
+        if self.is_processing_queue or (self.process and self.process.poll() is None):
+             if messagebox.askyesno("Exit Confirmation", "A cleaning process or queue is still running.\nExiting now may leave incomplete files.\n\nAre you sure you want to exit?"):
+                 self.log_output("Attempting to terminate running process/queue...\n")
+                 self.is_processing_queue = False # Stop further queue processing
+                 self.stop_thread.set()
+                 if self.process: # If a specific subprocess is active
                      try:
-                         self.process.terminate() # Ask nicely first
-                         self.process.wait(timeout=2) # Wait briefly
+                         self.process.terminate()
+                         self.process.wait(timeout=2)
                      except subprocess.TimeoutExpired:
                          self.log_output("Process did not terminate gracefully, killing...\n")
-                         self.process.kill() # Force kill
+                         self.process.kill()
                      except Exception as e:
                          self.log_output(f"Error terminating process: {e}\n")
-                 return True # Allow closing
+                 return True
              else:
-                 return False # Do not allow closing
-        else:
-            return True # Allow closing if no process is running
+                 return False
+        return True
 
 
 # Example Usage (for testing purposes, requires other modules)

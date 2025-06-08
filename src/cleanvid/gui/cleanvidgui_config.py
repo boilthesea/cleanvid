@@ -14,9 +14,10 @@ DEFAULT_CONFIG = {
     "last_output_dir": str(Path.home()),
     "last_swears_dir": os.path.join(os.path.dirname(__file__), '..'), # Default swears dir relative to gui dir
     "last_subs_dir": str(Path.home()),
-    "window_geometry": "800x750", # Default window size
+    "window_geometry": "1250x750", # Default window size - Increased width
     "chapter_markers": False,
     "fast_index": False, # Add this
+    "pending_queue": [], # For persisting the queue items
 }
 
 class ConfigManager:
