@@ -103,31 +103,48 @@ options:
   --win                 Use Windows-compatible multi-step processing (try this if you encounter errors on Windows, especially command-line length errors)
 ```
 
-Alternately, you can use the experimental cleanvidgui.py to pass all of the above options through checkboxes and fields. The gui relies on additional libraries customtkinter and tkinterdnd2.
+## Graphical User Interface (GUI)
+
+CleanVid includes a comprehensive GUI (`cleanvidgui.py`) that provides a user-friendly way to configure all cleaning options, manage a processing queue, and preview changes.
+
+The GUI requires additional libraries: `customtkinter` and `tkinterdnd2`.
+
+### Basic Usage
+
+1. **Input Video**: Select your source video file via the browse button or by dragging and dropping a file onto the application window.
+2. **Subtitles**: If a matching subtitle file is found nearby, it will be loaded automatically. If not subliminal will also attempt to download subtitles if none are found. You can also manually select or download subtitles.
+3. **Output**: Configure where you want the cleaned video to be saved.
+
+### Configuration Tabs
+
+The GUI organizes CleanVid's numerous options into several tabs:
+
+- **Options**: Basic settings like the profanity (swears) file, time padding around mutes, and language preference.
+- **Subtitle/Chapters**: Settings for subtitle embedding, hardcoding (burning), and creating automatic chapter markers at mute points.
+- **Video/Audio**: Controls for re-encoding parameters, audio stream selection, and downmixing.
+
+### Preview and Selective Filtering
+
+The **Preview** feature allows you to see exactly what CleanVid intends to filter before it modifies your files:
+
+1. Click the **Preview** button to analyze the video and subtitles.
+2. A **CleanVid Preview** window will open, displaying a list of every detected profanity line.
+3. For each detection, you can see the original text and the proposed "clean" version.
+4. **Selectively Filter**: Use the checkboxes to choose which edits to apply. Uncheck any lines you wish to keep as-is.
+5. Click **Apply Selected** to begin the cleaning process with your specific exclusions.
 
 ### GUI Queue Feature
 
 The Cleanvid GUI includes a powerful queue system to process multiple video files efficiently:
 
-- **Queue Panel**: A dedicated panel on the right side of the GUI displays the video processing queue.
-- **Adding Files**:
-  - Click the `+` button at the top of the queue panel to open a file dialog and select one or more video files.
-  - (Future: Drag-and-drop functionality may be supported).
-- **Settings per Batch**: When you add a batch of files, the settings currently selected in the "Options" tabs (e.g., swears file, output formats, encoding parameters) are locked in specifically for those files. If you change the settings and then add another batch of files, the new settings will apply only to that new batch.
-- **Managing the Queue**:
-  - **Remove File**: Click the trash can icon (🗑️) next to any file in the queue to remove it.
-  - **Clear Queue**: Click the `x` button at the top of the queue panel to remove all files from the queue.
-  - **View Settings**: Hover your mouse over a file in the queue to see a tooltip displaying the specific settings that are locked in for that file.
-- **Processing the Queue**:
-  - Click the "Run Queue" button (this button may also say "Clean Video" if the queue is empty but a single job is defined by the main input fields) to start processing all files in the queue sequentially.
-  - The GUI will process one file at a time, using its associated settings. Output and errors for each file will be displayed in the console area.
-- **Pausing and Resuming**:
-  - While the queue is processing, a "Pause" button will become available. Clicking it will pause the queue after the currently processing file is completed.
-  - The button will then change to "Resume", allowing you to continue processing the queue from where it left off.
-- **Queue Persistence**: If you close the Cleanvid GUI while there are files remaining in the queue (either waiting or if processing was paused), the queue will be automatically saved. When you next start the GUI, these pending items will be reloaded into the queue.
-- **Help**: Click the `?` button at the top of the queue panel for a summary of these instructions within the application.
-
-This queue system allows for flexible batch processing with different settings applied to different sets of videos.
+- **Queue Panel**: Located on the right side of the GUI.
+- **Adding Files**: Click the `+` button in the Queue panel to select one or more video files. Each batch of files added to the queue will "lock in" the current settings from the Options tabs.
+- **Managing items**:
+  - **🗑️ Trash Icon**: Remove a specific item from the queue.
+  - **`x` Button**: Clear the entire queue.
+  - **Settings Tooltip**: Hover over any item in the queue to see a tooltip detailing the settings that were applied to it.
+- **Processing**: Click **Run Queue** (or **Clean Video**) to start sequential processing.
+- **Pause/Resume**: Pause processing after the current item and resume whenever you're ready. The queue state is automatically saved if you close the application.
 
 ### Docker
 
