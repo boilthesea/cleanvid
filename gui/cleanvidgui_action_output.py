@@ -11,9 +11,11 @@ import os
 from pathlib import Path
 import shlex # To properly split command strings for subprocess
 import time # Import the time module
+import json
 
 from .cleanvidgui_tooltip import Tooltip
 from .cleanvidgui_config import ConfigManager # Import ConfigManager for default paths if needed
+from .cleanvidgui_preview import PreviewWindow
 
 # Need references to other frames to get input values and options
 # from .cleanvidgui_input_output import InputOutputFrame # Imported via type hinting or passed reference
@@ -55,12 +57,18 @@ class ActionOutputFrame(ctk.CTkFrame):
         self.clean_button.grid(row=0, column=0, padx=(5,2), pady=5, sticky="w")
         Tooltip(self.clean_button, "Start the video cleaning process or process the current queue.")
 
+        self.preview_button = ctk.CTkButton(buttons_frame, text="Preview", command=self.initiate_preview, height=35, fg_color="orange", hover_color="darkorange")
+        self.preview_button.grid(row=0, column=1, padx=2, pady=5, sticky="w")
+        Tooltip(self.preview_button, "Preview filtering changes and selectively apply them.")
+
         self.pause_button = ctk.CTkButton(buttons_frame, text="Pause", command=self.toggle_pause_resume, state="disabled", height=35)
-        self.pause_button.grid(row=0, column=1, padx=2, pady=5, sticky="w")
+        self.pause_button.grid(row=0, column=2, padx=2, pady=5, sticky="w")
         Tooltip(self.pause_button, "Pause or resume queue processing after the current file.")
 
         self.copy_button = ctk.CTkButton(buttons_frame, text="Copy Output", command=self.copy_output, height=35)
-        self.copy_button.grid(row=0, column=2, padx=(5,5), pady=5, sticky="e")
+        self.copy_button.grid(row=0, column=3, padx=(5,5), pady=5, sticky="e")
+        buttons_frame.grid_columnconfigure(2, weight=0) # Adjust column structure
+        buttons_frame.grid_columnconfigure(3, weight=1)
         Tooltip(self.copy_button, "Copy the entire content of the output console below to the clipboard.")
 
         # Output Console
@@ -357,6 +365,7 @@ class ActionOutputFrame(ctk.CTkFrame):
             cmd.extend(["--threads", str(threads_val)])
         if settings_dict.get('chapter_markers'): cmd.append("--chapter")
         if settings_dict.get('fast_index'): cmd.append("--fast-index")
+        if settings_dict.get('exclude_indices'): cmd.extend(["--exclude-indices", settings_dict['exclude_indices']])
 
         self.output_console.configure(state="normal")
         # Clear console only if it's a new queue item or single job, not for subsequent messages of the same item
@@ -424,6 +433,135 @@ class ActionOutputFrame(ctk.CTkFrame):
                 self.pause_button.configure(text="Pausing...", state="disabled")
             else: # Actively processing, not paused or requesting pause
                 self.pause_button.configure(text="Pause", state="normal")
+
+    def initiate_preview(self):
+        """Runs cleanvid in preview mode and opens the preview window."""
+        if self.is_processing_queue:
+            messagebox.showwarning("Busy", "Cannot run preview while a process is active.")
+            return
+            
+        if not self.input_output_frame or not self.input_output_frame.input_video_var.get():
+            messagebox.showerror("Error", "Please select an input video file first.")
+            return
+
+        input_video = self.input_output_frame.input_video_var.get()
+        current_settings = self.options_frame.get_state()
+        
+        # We need a temporary output for subs if they aren't provided
+        # cleanvid.py with --subs-only and --json-stdout will work.
+        
+        self.log_output("--- Starting Preview Generation... ---\n")
+        self.preview_button.configure(state="disabled", text="Generating...")
+        
+        script_dir = Path(__file__).parent.parent.parent / "cleanvid"
+        python_exe = sys.executable
+        script_to_run = script_dir / "cleanvid.py"
+        
+        cmd = [python_exe, str(script_to_run), "-i", input_video, "--subs-only", "--json-stdout"]
+        
+        if current_settings.get('input_subs'):
+            cmd.extend(["-s", current_settings['input_subs']])
+        if current_settings.get('enable_swears_file', False) and current_settings.get('swears_file'):
+            cmd.extend(["-w", current_settings['swears_file']])
+        if current_settings.get('enable_subtitle_lang', False) and current_settings.get('subtitle_lang'):
+            cmd.extend(["-l", current_settings['subtitle_lang']])
+        if current_settings.get('enable_padding', False) and current_settings.get('padding', 0.0) > 0:
+            cmd.extend(["-p", str(current_settings['padding'])])
+            
+        self.log_output(f"Executing Preview: {shlex.join(cmd)}\n")
+        
+        thread = threading.Thread(target=self.run_preview_thread, args=(cmd,), daemon=True)
+        thread.start()
+
+    def run_preview_thread(self, cmd):
+        """Runs the preview command and parses output for JSON."""
+        try:
+            process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
+            
+            stdout_data = []
+            
+            def read_stream(stream, target_list):
+                for line in iter(stream.readline, ''):
+                    target_list.append(line)
+                    self.log_output(line)
+                stream.close()
+
+            t1 = threading.Thread(target=read_stream, args=(process.stdout, stdout_data))
+            t1.start()
+            
+            # For stderr, we just log it
+            for line in iter(process.stderr.readline, ''):
+                self.log_output(line)
+            process.stderr.close()
+            
+            t1.join()
+            process.wait()
+            
+            if process.returncode == 0:
+                whole_stdout = "".join(stdout_data)
+                if "CLEANVID_JSON_START" in whole_stdout and "CLEANVID_JSON_END" in whole_stdout:
+                    json_str = whole_stdout.split("CLEANVID_JSON_START")[1].split("CLEANVID_JSON_END")[0].strip()
+                    try:
+                        json_data = json.loads(json_str)
+                        self.after(0, lambda: self.show_preview_window(json_data))
+                    except Exception as e:
+                        self.log_output(f"Error parsing preview JSON: {e}\n")
+                else:
+                    self.log_output("Error: Preview JSON not found in output.\n")
+            else:
+                self.log_output(f"Preview failed with exit code: {process.returncode}\n")
+                
+        except Exception as e:
+            self.log_output(f"Error during preview execution: {e}\n")
+        finally:
+            self.after(0, lambda: self.preview_button.configure(state="normal", text="Preview"))
+
+    def show_preview_window(self, json_data):
+        """Opens the preview window with the parsed data."""
+        PreviewWindow(self.master, json_data, self.apply_preview_changes)
+
+    def apply_preview_changes(self, excluded_indices):
+        """Runs the clean process with the excluded indices."""
+        self.log_output(f"Applying preview changes. Excluded indices: {', '.join(excluded_indices) if excluded_indices else 'None'}\n")
+        
+        input_video = self.input_output_frame.input_video_var.get()
+        current_settings = self.options_frame.get_state().copy()
+        
+        if excluded_indices:
+            current_settings['exclude_indices'] = ",".join(excluded_indices)
+            
+        # Trigger single job processing with these settings
+        # We need to bypass the normal initiate_processing which takes state from UI
+        # or we hack the settings into the single job call.
+        
+        output_info = self.input_output_frame.get_state()
+        input_video_path = output_info.get("input_video")
+        save_to_same_dir = output_info.get("save_to_same_dir", True)
+        output_dir = output_info.get("output_dir")
+        output_filename = output_info.get("output_filename")
+
+        suggested_output_path = ""
+        if input_video_path:
+            input_path_obj = Path(input_video_path)
+            if save_to_same_dir:
+                suggested_output_path = str(input_path_obj.parent / f"{input_path_obj.stem}_clean{input_path_obj.suffix}")
+            elif output_dir and output_filename:
+                suggested_output_path = str(Path(output_dir) / output_filename)
+        
+        self.is_processing_queue = True
+        self.update_clean_button_state()
+        
+        self._execute_cleanvid_task(
+            input_video,
+            suggested_output_path,
+            current_settings,
+            "preview_applied_job",
+            is_single_job=True
+        )
 
 
     def run_cleanvid_thread(self, cmd, expected_output_path, item_id, is_single_job=False, settings_dict=None):
