@@ -238,6 +238,8 @@ class VidCleaner(object):
     swearsMap = CaselessDictionary({})
     muteTimeList = []
     jsonDumpList = None
+    jsonStdout = False
+    excludeIndices = []
     use_win_method = False # Added for Windows compatibility
 
     ######## init #################################################################
@@ -270,6 +272,8 @@ class VidCleaner(object):
         use_win_method=False, # Added for Windows compatibility
         fast_index=False, # Add this here
         chapter_markers=False,
+        jsonStdout=False,
+        excludeIndices="",
     ):
         if (iVidFileSpec is not None) and os.path.isfile(iVidFileSpec):
             self.inputVidFileSpec = iVidFileSpec
@@ -299,7 +303,8 @@ class VidCleaner(object):
         self.fullSubs = fullSubs
         self.subsOnly = subsOnly or edl or (plexAutoSkipJson and plexAutoSkipId)
         self.edl = edl
-        self.jsonDumpList = [] if jsonDump else None
+        self.jsonDumpList = [] if jsonDump or jsonStdout or plexAutoSkipJson else None
+        print(f"Debug: jsonDumpList initialized: {'Yes' if self.jsonDumpList is not None else 'No'} (jsonDump: {jsonDump}, jsonStdout: {jsonStdout})")
         self.plexAutoSkipJson = plexAutoSkipJson
         self.plexAutoSkipId = plexAutoSkipId
         self.reEncodeVideo = reEncodeVideo
@@ -320,6 +325,8 @@ class VidCleaner(object):
         self.fast_index = fast_index # Store it
         self.chapter_markers = chapter_markers
         self.chapter_file_path = None
+        self.jsonStdout = jsonStdout
+        self.excludeIndices = [int(i.strip()) for i in excludeIndices.split(',') if i.strip().isdigit()] if excludeIndices else []
 
     ######## del ##################################################################
     def __del__(self):
@@ -438,15 +445,24 @@ class VidCleaner(object):
                 )
             ):
                 subScrubbed = newText != sub.text
+                subScrubbed = newText != sub.text
                 if subScrubbed and (self.jsonDumpList is not None):
-                    self.jsonDumpList.append(
-                        {
-                            'old': sub.text,
-                            'new': newText,
-                            'start': str(sub.start),
-                            'end': str(sub.end),
-                        }
-                    )
+                    edit_item = {
+                        'old': sub.text,
+                        'new': newText,
+                        'index': sub.index,
+                        'start': str(sub.start),
+                        'end': str(sub.end),
+                    }
+                    self.jsonDumpList.append(edit_item)
+                    print(f"Debug: Profanity detected at index {sub.index}. Adding to preview.")
+                
+                if sub.index in self.excludeIndices:
+                    if self.fullSubs:
+                        newSubs.append(sub)
+                    prevNaughtySub = None
+                    continue
+
                 newSub = sub
                 newSub.text = newText
                 newSubs.append(newSub)
@@ -484,26 +500,29 @@ class VidCleaner(object):
                 prevNaughtySub = None
 
         newSubs.save(self.cleanSubsFileSpec)
+        
+        json_data = {
+            "now": datetime.now().isoformat(),
+            "edits": self.jsonDumpList,
+            "media": {
+                "input": self.inputVidFileSpec,
+                "output": self.outputVidFileSpec,
+                "ffprobe": GetFormatAndStreamInfo(self.inputVidFileSpec),
+            },
+            "subtitles": {
+                "input": self.inputSubsFileSpec,
+                "output": self.cleanSubsFileSpec,
+            },
+        }
+
+        if self.jsonStdout:
+            print(f"CLEANVID_JSON_START")
+            print(json.dumps(json_data, indent=4))
+            print(f"CLEANVID_JSON_END")
+
         if self.jsonDumpList is not None:
             with open(self.jsonFileSpec, "w") as f:
-                f.write(
-                    json.dumps(
-                        {
-                            "now": datetime.now().isoformat(),
-                            "edits": self.jsonDumpList,
-                            "media": {
-                                "input": self.inputVidFileSpec,
-                                "output": self.outputVidFileSpec,
-                                "ffprobe": GetFormatAndStreamInfo(self.inputVidFileSpec),
-                            },
-                            "subtitles": {
-                                "input": self.inputSubsFileSpec,
-                                "output": self.cleanSubsFileSpec,
-                            },
-                        },
-                        indent=4,
-                    )
-                )
+                f.write(json.dumps(json_data, indent=4))
 
         self.muteTimeList = []
         edlLines = []
@@ -1205,6 +1224,19 @@ def RunCleanvid():
         # default=False, # Default is handled by set_defaults
         dest="fast_index"
     )
+    parser.add_argument(
+        '--exclude-indices',
+        help='subtitle indices to exclude from filtering (comma separated)',
+        metavar='<indices>',
+        dest="excludeIndices",
+        default="",
+    )
+    parser.add_argument(
+        '--json-stdout',
+        help='print JSON detailing edits to stdout',
+        dest="jsonStdout",
+        action='store_true',
+    )
     parser.set_defaults(
         audioStreamIdxList=False,
         edl=False,
@@ -1219,6 +1251,7 @@ def RunCleanvid():
         use_win_method=False, # Default to False
         chapter_markers=False, # Default chapter_markers to False
         fast_index=False, # Add this
+        jsonStdout=False,
     )
     args = parser.parse_args()
 
@@ -1329,6 +1362,8 @@ def RunCleanvid():
              args.use_win_method, # Pass the flag
              args.fast_index, # Add this here
              args.chapter_markers, # Pass chapter_markers
+             args.jsonStdout,
+             args.excludeIndices,
         )
         cleaner.CreateCleanSubAndMuteList()
         # --- Wrap the potentially failing call ---
